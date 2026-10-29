@@ -10,6 +10,7 @@
 #
 #   nextui-mods-<build>.tar   the reserve as-is (flat files)
 #   SHA256SUMS                its checksum
+#   SHA256SUMS.sig            its Ed25519 signature (sign.sh)
 #
 # The console (nextui-mods/fetch.sh) downloads it when that version comes out,
 # checks the checksum against the one GitHub reports, then stores it in its
@@ -44,7 +45,8 @@ for want in "$@"; do
   done_ids="$done_ids$id "
 
   published="$(gh release view "$id" --json body -q .body 2>/dev/null | sed -n 's/^patchset: //p' || true)"
-  if [ "$FORCE" = no ] && [ "$published" = "$PATCHSET" ]; then
+  signed="$(gh release view "$id" --json assets -q '.assets[].name' 2>/dev/null | grep -cx 'SHA256SUMS.sig' || true)"
+  if [ "$FORCE" = no ] && [ "$published" = "$PATCHSET" ] && [ "$signed" = 1 ]; then
     echo "→ $tag ($id): already published with patches $PATCHSET"
     continue
   fi
@@ -59,14 +61,15 @@ for want in "$@"; do
   rm -rf "$dist"; mkdir -p "$dist"
   tar -cf "$dist/nextui-mods-$id.tar" -C "$out" "${FILES[@]}"
   (cd "$dist" && sha256sum "nextui-mods-$id.tar" > SHA256SUMS)
+  "$HERE/sign.sh" "$dist/SHA256SUMS"
   notes="$(printf 'NextUI %s (%s), commit %s\n\npatchset: %s\nbuilt: %s\n' \
     "$tag" "$id" "$(cut -d' ' -f2 "$out/SOURCE")" "$PATCHSET" "${GITHUB_SHA:-local}")"
 
   if gh release view "$id" >/dev/null 2>&1; then
-    gh release upload "$id" "$dist/nextui-mods-$id.tar" "$dist/SHA256SUMS" --clobber
+    gh release upload "$id" "$dist/nextui-mods-$id.tar" "$dist/SHA256SUMS" "$dist/SHA256SUMS.sig" --clobber
     gh release edit "$id" --notes "$notes"
   else
-    gh release create "$id" "$dist/nextui-mods-$id.tar" "$dist/SHA256SUMS" \
+    gh release create "$id" "$dist/nextui-mods-$id.tar" "$dist/SHA256SUMS" "$dist/SHA256SUMS.sig" \
       --title "$tag ($id)" --notes "$notes" ${GITHUB_SHA:+--target "$GITHUB_SHA"}
   fi
   echo "→ published: $id ($(cut -d' ' -f1 "$dist/SHA256SUMS" | cut -c1-16))"

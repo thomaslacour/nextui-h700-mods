@@ -3,7 +3,9 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -132,5 +134,50 @@ func TestSelfUpdateRollback(t *testing.T) {
 	}
 	if f.read("Tools/h700/Updates.pak/pak") != next || !exists(f.e.previousSelf()) {
 		t.Fatal("self-update result wrong")
+	}
+}
+
+func TestSignedCatalogue(t *testing.T) {
+	f := newFixture(t)
+	f.release(pakEntry("S1", "Store", "TOOL", "1.0.0", "Store.pak.zip", map[string]any{
+		"repo_url": "file://" + f.root + "/repo/o/s1"}), map[string]string{"launch.sh": "s"}, "")
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	key := base64.StdEncoding.EncodeToString(pub)
+	f.ownRelease("music", "Music", "1.0.0", map[string]string{"launch.sh": "v1"}, "")
+	cat := filepath.Join(f.root, "own.json")
+	src := "file://" + cat + " ed25519:" + key + "\n"
+	os.WriteFile(filepath.Join(f.e.home, "sources"), []byte(src), 0o644)
+	sign := func() { d, _ := os.ReadFile(cat); os.WriteFile(cat+".sig", ed25519.Sign(priv, d), 0o644) }
+
+	// No signature, then a wrong one: refused (Pak Store still fine).
+	if rc := f.run("update"); rc != 0 || !strings.Contains(f.out.String(), "signature") {
+		t.Fatalf("unsigned catalogue accepted: %s", f.out)
+	}
+	os.WriteFile(cat+".sig", make([]byte, 64), 0o644)
+	if f.run("update"); !strings.Contains(f.out.String(), "bad signature") {
+		t.Fatalf("bad signature accepted: %s", f.out)
+	}
+	if c, _ := f.e.cachedCatalog(); c != nil && len(c.paks) != 1 {
+		t.Fatalf("refused catalogue cached: %d paks", len(c.paks))
+	}
+	// Signed: accepted.
+	sign()
+	if rc := f.run("update"); rc != 0 || strings.Contains(f.out.String(), "refused") {
+		t.Fatalf("signed catalogue refused: %s", f.out)
+	}
+	if c, _ := f.e.cachedCatalog(); c == nil || len(c.paks) != 2 {
+		t.Fatal("signed catalogue not used")
+	}
+
+	// pak verify, for scripts.
+	data := filepath.Join(f.root, "SHA256SUMS")
+	os.WriteFile(data, []byte("abc  x.tar\n"), 0o644)
+	os.WriteFile(data+".sig", ed25519.Sign(priv, []byte("abc  x.tar\n")), 0o644)
+	if rc := f.run("verify", data, data+".sig", key); rc != 0 {
+		t.Fatalf("verify good: %s", f.out)
+	}
+	os.WriteFile(data, []byte("abd  x.tar\n"), 0o644)
+	if rc := f.run("verify", data, data+".sig", key); rc == 0 {
+		t.Fatal("verify accepted a changed file")
 	}
 }

@@ -3,11 +3,15 @@ package main
 // Catalogues: the Pak Store's storefront.json (LoveRetro/nextui-pak-store,
 // gh-pages branch), plus our own ones listed in <home>/sources (one URL per
 // line, same format). Each is cached on the SD card; an entry of our own
-// catalogues wins over a Pak Store entry with the same id.
+// catalogues wins over a Pak Store entry with the same id. A source line may
+// add "ed25519:<base64 public key>": the catalogue must then come with a valid
+// signature at <url>.sig, else it is refused (the cached copy is kept).
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -104,9 +108,23 @@ func parseCatalog(data []byte) ([]catPak, error) {
 	return append(sf.Paks, sf.Experimental...), nil
 }
 
+// source is one catalogue: its URL and, for ours, the key that signs it.
+type source struct {
+	url string
+	key ed25519.PublicKey
+}
+
 // sources lists the catalogue URLs: the Pak Store, then <home>/sources.
 func (e *env) sources() []string {
-	out := []string{e.storefront}
+	var out []string
+	for _, s := range e.sourceList() {
+		out = append(out, s.url)
+	}
+	return out
+}
+
+func (e *env) sourceList() []source {
+	out := []source{{url: e.storefront}}
 	f, err := os.Open(filepath.Join(e.home, "sources"))
 	if err != nil {
 		return out
@@ -114,11 +132,40 @@ func (e *env) sources() []string {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if u := strings.TrimSpace(sc.Text()); u != "" && !strings.HasPrefix(u, "#") {
-			out = append(out, u)
+		w := strings.Fields(sc.Text())
+		if len(w) == 0 || strings.HasPrefix(w[0], "#") {
+			continue
 		}
+		s := source{url: w[0]}
+		for _, x := range w[1:] {
+			if k, ok := strings.CutPrefix(x, "ed25519:"); ok {
+				if s.key = parseKey(k); s.key == nil {
+					s.key = ed25519.PublicKey{} // unusable key: refuse, never skip the check
+				}
+			}
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+func parseKey(b64 string) ed25519.PublicKey {
+	k, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(k) != ed25519.PublicKeySize {
+		return nil
+	}
+	return ed25519.PublicKey(k)
+}
+
+// verifySig checks an Ed25519 signature (64 raw bytes) of data.
+func verifySig(key ed25519.PublicKey, data, sig []byte) error {
+	if len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("bad public key")
+	}
+	if len(sig) != ed25519.SignatureSize || !ed25519.Verify(key, data, sig) {
+		return fmt.Errorf("bad signature")
+	}
+	return nil
 }
 
 // cacheFile is where a catalogue is kept: storefront.json for the Pak Store,
@@ -135,6 +182,18 @@ func (e *env) fetchOne(src string) ([]catPak, error) {
 	data, err := e.get(src, 3)
 	if err != nil {
 		return nil, fmt.Errorf("catalogue unreachable (%s): %v", src, err)
+	}
+	for _, s := range e.sourceList() {
+		if s.url != src || s.key == nil {
+			continue
+		}
+		sig, err := e.get(src+".sig", 3)
+		if err == nil {
+			err = verifySig(s.key, data, sig)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("catalogue %s refused: signature: %v", src, err)
+		}
 	}
 	paks, err := parseCatalog(data)
 	if err != nil {

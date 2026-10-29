@@ -1,6 +1,6 @@
 {
   "name": "Updates",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "TOOL",
   "description": "All updates in one place: verified BaseOS install, NextUI (status, modifications readiness, Updater), Pak Store paks (pak command)",
   "author": "NextUI H700 community tooling (BaseOS part inspired by Base Jumper)",

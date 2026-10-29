@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "1.1.0"
+const version = "1.2.0"
 
 const usage = `pak — NextUI pak manager (Pak Store catalogue)
 
@@ -29,11 +29,13 @@ const usage = `pak — NextUI pak manager (Pak Store catalogue)
   pak hide [name...]            keep these Tools hidden (no name: apply the list)
   pak unhide name...            show a hidden Tool again
   pak doctor                    check paks, rights, catalogue and network
+  pak verify file sig key       Ed25519 signature check (key: base64), for scripts
   pak version
 
 A name is a pak name (Tools/Emus folder), its store name or its catalogue id.
 More catalogues (same format, entries with url and sha256): one URL per line
-in <userdata>/pak/sources; their entries win over the Pak Store's.
+in <userdata>/pak/sources, optionally followed by ed25519:<base64 key> (then
+<url>.sig must be a valid signature); their entries win over the Pak Store's.
 Environment: SDCARD_PATH, PLATFORM, USERDATA_PATH, PAK_STOREFRONT (catalogue
 URL), PAK_STRICT=1 (refuse archives without a published SHA-256).
 `
@@ -100,6 +102,21 @@ func run(e *env, args []string) int {
 		}
 	case "version", "--version":
 		e.say("pak %s", version)
+	case "verify":
+		if len(names) != 3 {
+			return usageErr(e, "verify: file sig key")
+		}
+		data, err1 := os.ReadFile(names[0])
+		sig, err2 := os.ReadFile(names[1])
+		if err1 != nil || err2 != nil {
+			fmt.Fprintln(e.errw, "error: cannot read the file or its signature")
+			return 1
+		}
+		if err := verifySig(parseKey(names[2]), data, sig); err != nil {
+			fmt.Fprintln(e.errw, "error:", err)
+			return 1
+		}
+		e.say("signature ok")
 	case "help", "-h", "--help":
 		fmt.Fprint(e.out, usage)
 	default:

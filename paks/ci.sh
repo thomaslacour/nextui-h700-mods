@@ -4,7 +4,8 @@
 # Each pak with a MANIFEST is released once per version (tag
 # pak-<dir>-v<version>, from its pak.json): bump "version" to publish.
 # Then the catalogue storefront.json (Pak Store format, plus url and sha256)
-# is uploaded to the "paks" release, where the console's `pak` reads it.
+# and its signature storefront.json.sig (nextui/sign.sh) are uploaded to the
+# "paks" release, where the console's `pak` reads and checks them.
 set -euo pipefail
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 : "${GH_TOKEN:?GH_TOKEN missing}" "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY missing}"
@@ -44,5 +45,6 @@ jq -s '{name: "NextUI H700 mods", paks: .}' "$entries" > "$DIST/storefront.json"
 gh release view paks >/dev/null 2>&1 ||
   gh release create paks --title "Paks catalogue" --latest=false \
     --notes "storefront.json: the catalogue read by the console's pak command."
-gh release upload paks "$DIST/storefront.json" --clobber
+"$HERE/../nextui/sign.sh" "$DIST/storefront.json"
+gh release upload paks "$DIST/storefront.json" "$DIST/storefront.json.sig" --clobber
 echo "→ catalogue: $(jq '.paks | length' "$DIST/storefront.json") paks"

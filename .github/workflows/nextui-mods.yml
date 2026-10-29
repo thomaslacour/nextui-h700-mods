@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # keep-alive below
 
 concurrency:
   group: nextui-mods
@@ -37,6 +38,7 @@ jobs:
       - name: Build and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODS_SIGNING_KEY: ${{ secrets.MODS_SIGNING_KEY }}
           TAG: ${{ inputs.tag }}
           FORCE: ${{ inputs.force }}
         run: |
@@ -44,3 +46,10 @@ jobs:
           [ "$FORCE" = true ] && args+=(--force)
           [ -n "$TAG" ] && args+=("$TAG")
           nextui/ci.sh "${args[@]}"
+      # GitHub pauses scheduled workflows after 60 days without a commit;
+      # re-enabling this one through the API restarts that count.
+      - name: Keep the schedule alive
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/nextui-mods.yml/enable"

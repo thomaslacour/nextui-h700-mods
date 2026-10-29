@@ -3,4 +3,4 @@
 launch.sh      paks/pad-setup/launch.sh
 pak.json       paks/pad-setup/pak.json
 lib/paplib.sh  paks/lib/paplib.sh
-pad-probe      build/pad-setup/pad-probe
+pad-probe      build/h700/pad-probe

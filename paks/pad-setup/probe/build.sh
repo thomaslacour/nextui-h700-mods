@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # paks/pad-setup/probe/build.sh — build pad-probe (reads the pad through
-# NextUI's SDL2) in the H700 toolchain container. Output: build/pad-setup/.
+# NextUI's SDL2) in the H700 toolchain container. Output: build/h700/pad-probe
+# (work folder build/pad-setup/). ./build.sh builds it too.
 # Runtime: CONTAINER_RUNTIME, else Apple container, else podman.
 set -euo pipefail
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -11,4 +12,5 @@ RUNTIME="${CONTAINER_RUNTIME:-}"
 mkdir -p "$OUT"; cp "$HERE/pad-probe.c" "$OUT/"
 "$RUNTIME" run --rm -v "$OUT":/root/w "${NEXTUI_IMAGE:-ghcr.io/loveretro/h700-toolchain:latest}" /bin/bash -euc '
   cd /root/w && ${CROSS_COMPILE}gcc -O2 -Wall -Wextra -Werror -s -I/opt/nextui/include -o pad-probe pad-probe.c -lSDL2'
-echo "OK -> build/pad-setup/pad-probe"
+mkdir -p "$OUT/../h700" && install -m 755 "$OUT/pad-probe" "$OUT/../h700/pad-probe"
+echo "OK -> build/h700/pad-probe"
