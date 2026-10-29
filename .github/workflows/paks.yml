@@ -1,0 +1,33 @@
+# GENERATED FROM the private project (paks/ci/paks.yml): edit there,
+# then mac/publish-nextui-mods.sh.
+#
+# Release each pak when its version changes, and publish the catalogue the
+# console's `pak` command reads.
+name: Paks
+
+on:
+  push:
+    branches: [main]
+    paths: ["paks/**", ".github/workflows/paks.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paks
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Release paks and catalogue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: paks/ci.sh

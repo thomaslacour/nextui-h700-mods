@@ -1,0 +1,5 @@
+# Music.pak: <path in the pak> <source, relative to paks/>  (go:<dir> = Go build)
+launch.sh      music/launch.sh
+pak.json       music/pak.json
+lib/paplib.sh  lib/paplib.sh
+music          go:music/player

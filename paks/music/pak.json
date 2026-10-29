@@ -1,0 +1,8 @@
+{
+  "name": "Music",
+  "version": "1.0.0",
+  "type": "TOOL",
+  "description": "Music player for a Subsonic / Navidrome server: albums, artists, playlists, starred, search; keeps playing after exit",
+  "author": "NextUI H700 community tooling",
+  "platforms": ["h700"]
+}
