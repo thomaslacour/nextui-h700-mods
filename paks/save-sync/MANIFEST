@@ -1,0 +1,11 @@
+# Save Sync.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
+# payload/ is installed outside the pak by post-install.sh.
+launch.sh                          paks/save-sync/launch.sh
+pak.json                           paks/save-sync/pak.json
+post-install.sh                    paks/save-sync/post-install.sh
+lib/paplib.sh                      paks/lib/paplib.sh
+log-viewer                         go:logview
+payload/save-sync-engine           go:engine
+payload/scheduler/cronctl.sh       paks/save-sync/scheduler/cronctl.sh
+payload/scheduler/check-updates.sh paks/save-sync/scheduler/check-updates.sh
+payload/defaults/                  paks/save-sync/defaults/

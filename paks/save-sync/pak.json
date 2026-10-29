@@ -1,0 +1,20 @@
+{
+  "name": "Save Sync",
+  "version": "1.0.0",
+  "type": "TOOL",
+  "description": "PortMaster saves <-> Steam Cloud: status, sync now, conflicts, schedule",
+  "author": "NextUI H700 community tooling",
+  "platforms": [
+    "h700"
+  ],
+  "scripts": {
+    "post_install": {
+      "path": "post-install.sh",
+      "args": []
+    },
+    "post_update": {
+      "path": "post-install.sh",
+      "args": []
+    }
+  }
+}
