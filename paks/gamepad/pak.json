@@ -1,0 +1,8 @@
+{
+  "name": "Gamepad",
+  "version": "1.0.0",
+  "type": "TOOL",
+  "description": "Use the console as a Bluetooth game pad for a Mac, PC or phone (Bluetooth classic HID)",
+  "author": "NextUI H700 community tooling",
+  "platforms": ["h700"]
+}

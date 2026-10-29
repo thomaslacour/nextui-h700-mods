@@ -21,7 +21,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -30,4 +30,5 @@ jobs:
       - name: Release paks and catalogue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINER_RUNTIME: docker
         run: paks/ci.sh

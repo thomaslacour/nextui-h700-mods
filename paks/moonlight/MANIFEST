@@ -1,0 +1,15 @@
+# Moonlight.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
+@run                    moonlight/build.sh
+@run                    paks/moonlight/fetch-keyboard.sh
+launch.sh               paks/moonlight/launch.sh
+pak.json                paks/moonlight/pak.json
+post-install.sh         paks/moonlight/post-install.sh
+system/launch.sh        paks/moonlight-system/launch.sh
+lib/paplib.sh           paks/lib/paplib.sh
+log-viewer              go:logview
+client/moonlight        build/moonlight/bin/moonlight
+client/libs/            build/moonlight/lib/
+client/licenses/        build/moonlight/licenses/
+client/SOURCE           build/moonlight/SOURCE
+client/wol              go:paks/moonlight/wol
+client/minui-keyboard   build/cache/minui-keyboard-0.10.1/minui-keyboard

@@ -1,0 +1,5 @@
+# Gamepad.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
+launch.sh      paks/gamepad/launch.sh
+pak.json       paks/gamepad/pak.json
+lib/paplib.sh  paks/lib/paplib.sh
+gamepad        go:paks/gamepad/pad

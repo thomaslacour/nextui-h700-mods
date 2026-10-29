@@ -1,0 +1,27 @@
+{
+  "name": "Moonlight",
+  "version": "1.0.0",
+  "type": "TOOL",
+  "description": "Stream games from a PC running Apollo or Sunshine (moonlight-embedded from the PortMaster port, native NextUI screens)",
+  "author": "NextUI H700 community tooling (client: moonlight-embedded, port by JanTrueno)",
+  "platforms": [
+    "h700"
+  ],
+  "scripts": {
+    "post_install": {
+      "path": "post-install.sh",
+      "args": []
+    },
+    "post_update": {
+      "path": "post-install.sh",
+      "args": []
+    },
+    "post_uninstall": {
+      "path": "/bin/sh",
+      "args": [
+        "-c",
+        "rm -rf \"${SDCARD_PATH:-/mnt/SDCARD}/Emus/${PLATFORM:-h700}/MOONLIGHT.pak\""
+      ]
+    }
+  }
+}

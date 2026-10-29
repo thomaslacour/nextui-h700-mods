@@ -1,0 +1,8 @@
+{
+  "name": "Pad Setup",
+  "version": "1.0.0",
+  "type": "TOOL",
+  "description": "Set up an external pad that the SDL database maps wrongly: press each control, the mapping line is saved for the menus, games and ports",
+  "author": "NextUI H700 community tooling",
+  "platforms": ["h700"]
+}

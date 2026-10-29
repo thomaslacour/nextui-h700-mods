@@ -36,7 +36,8 @@ for m in "$HERE"/*/MANIFEST; do
     --arg sha "$sha" --argjson size "$(jq .size <<< "$asset")" \
     '$p[0] | {id: $id, name, version, type, description, author, platforms,
       repo_url: $repo, release_filename: $file, url: $url, sha256: $sha, size: $size,
-      update_ignore: (.update_ignore // []), categories: (.categories // [])}' >> "$entries"
+      update_ignore: (.update_ignore // []), categories: (.categories // []),
+      scripts: (.scripts // {})}' >> "$entries"
 done
 
 jq -s '{name: "NextUI H700 mods", paks: .}' "$entries" > "$DIST/storefront.json"
