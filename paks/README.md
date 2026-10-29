@@ -9,6 +9,7 @@ by the `pak` command and the Updates pak.
 | Moonlight | stream games from a PC (Apollo / Sunshine); adds a "Moonlight" system to the main menu |
 | Music | Subsonic / Navidrome player: albums, artists, playlists, search; keeps playing after exit |
 | Pad Setup | map an external pad the SDL database gets wrong |
+| Updates | BaseOS, NextUI and pak updates in one place; ships the `pak` and `port` commands, and updates itself (the new `pak` must start, else the previous one is put back) |
 | Save Sync | PortMaster saves <-> Steam Cloud (needs Aurelia, not included); installs its engine and scheduler in `.userdata/` |
 
 ## How a pak is released
