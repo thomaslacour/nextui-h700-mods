@@ -1,8 +1,8 @@
 diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
-index e107225d..e9c15352 100644
+index 410c3631..d73c511a 100644
 --- a/workspace/all/common/api.c
 +++ b/workspace/all/common/api.c
-@@ -2690,6 +2690,7 @@ SDL_Color GFX_mapColor(uint32_t c)
+@@ -3078,6 +3078,7 @@ SDL_Color GFX_mapColor(uint32_t c)
  
  pthread_mutex_t audio_mutex = PTHREAD_MUTEX_INITIALIZER;
  
@@ -10,7 +10,7 @@ index e107225d..e9c15352 100644
  static void SND_audioCallback(void *userdata, uint8_t *stream, int len)
  {
  	if (snd.frame_count == 0)
-@@ -2712,8 +2713,10 @@ static void SND_audioCallback(void *userdata, uint8_t *stream, int len)
+@@ -3100,8 +3101,10 @@ static void SND_audioCallback(void *userdata, uint8_t *stream, int len)
  	}
  	pthread_mutex_unlock(&audio_mutex);
  
@@ -22,7 +22,7 @@ index e107225d..e9c15352 100644
  }
  static void SND_resizeBuffer(void)
  { // plat_sound_resize_buffer
-@@ -2930,6 +2933,23 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
+@@ -3318,6 +3321,23 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
  		snd.frame_count = 4096; // idk some random samples nr this should never hit tho, just to be safe
  	}
  
@@ -46,7 +46,7 @@ index e107225d..e9c15352 100644
  	pthread_mutex_lock(&audio_mutex);
  	if (snd.frame_in < 0 || snd.frame_in >= snd.frame_count)
  	{
-@@ -2989,6 +3009,33 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
+@@ -3377,6 +3397,33 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
  	{
  		safe_ratio = 1.0f;
  	}
@@ -80,7 +80,7 @@ index e107225d..e9c15352 100644
  
  	ratio = safe_ratio + bufferadjustment;
  
-@@ -3204,9 +3251,21 @@ void SND_init(double sample_rate, double frame_rate)
+@@ -3592,9 +3639,21 @@ void SND_init(double sample_rate, double frame_rate)
  	SDL_AudioSpec spec_out;
  
  	spec_in.freq = PLAT_pickSampleRate(sample_rate, MAX_SAMPLE_RATE);
@@ -103,7 +103,7 @@ index e107225d..e9c15352 100644
  	spec_in.callback = SND_audioCallback;
  
  #if defined(USE_SDL2)
-@@ -3231,7 +3290,7 @@ void SND_init(double sample_rate, double frame_rate)
+@@ -3619,7 +3678,7 @@ void SND_init(double sample_rate, double frame_rate)
  
  	LOG_info("We now have audio device #%d\n", snd.device_id);
  

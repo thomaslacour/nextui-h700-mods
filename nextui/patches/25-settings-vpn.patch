@@ -1,5 +1,5 @@
 diff --git a/workspace/all/nextui/nextui.c b/workspace/all/nextui/nextui.c
-index 0306ad3..78f1fe1 100644
+index 0306ad30..78f1fe17 100644
 --- a/workspace/all/nextui/nextui.c
 +++ b/workspace/all/nextui/nextui.c
 @@ -1010,6 +1010,8 @@ static void addEntries(Array* entries, char* path) {
@@ -12,7 +12,7 @@ index 0306ad3..78f1fe1 100644
  			int is_dir = dp->d_type==DT_DIR;
  			int type;
 diff --git a/workspace/all/settings/makefile b/workspace/all/settings/makefile
-index 4c3f3c8..f77198a 100644
+index 4c3f3c84..f77198a7 100644
 --- a/workspace/all/settings/makefile
 +++ b/workspace/all/settings/makefile
 @@ -22,7 +22,7 @@ SDL?=SDL
@@ -25,7 +25,7 @@ index 4c3f3c8..f77198a 100644
  
  CC = $(CROSS_COMPILE)gcc
 diff --git a/workspace/all/settings/settings.cpp b/workspace/all/settings/settings.cpp
-index f9f7404..4a17436 100644
+index f9f74047..4a17436d 100644
 --- a/workspace/all/settings/settings.cpp
 +++ b/workspace/all/settings/settings.cpp
 @@ -23,6 +23,7 @@ extern "C"
@@ -49,7 +49,7 @@ index f9f7404..4a17436 100644
  
 diff --git a/workspace/all/settings/vpnmenu.cpp b/workspace/all/settings/vpnmenu.cpp
 new file mode 100644
-index 0000000..ea24893
+index 00000000..ea248930
 --- /dev/null
 +++ b/workspace/all/settings/vpnmenu.cpp
 @@ -0,0 +1,660 @@
@@ -715,7 +715,7 @@ index 0000000..ea24893
 +}
 diff --git a/workspace/all/settings/vpnmenu.hpp b/workspace/all/settings/vpnmenu.hpp
 new file mode 100644
-index 0000000..b8d8892
+index 00000000..b8d8892b
 --- /dev/null
 +++ b/workspace/all/settings/vpnmenu.hpp
 @@ -0,0 +1,73 @@

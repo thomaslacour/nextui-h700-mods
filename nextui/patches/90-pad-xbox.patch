@@ -1,8 +1,8 @@
 diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
-index 9f1f1c18..efc3a685 100644
+index 005c41be..d8bc42bc 100644
 --- a/workspace/all/common/api.c
 +++ b/workspace/all/common/api.c
-@@ -3742,6 +3742,8 @@ PAD_Context pad;
+@@ -3758,6 +3758,8 @@ PAD_Context pad;
  PAD_Context pad2;
  FALLBACK_IMPLEMENTATION void PLAT_setPlayersMode(int mode) {}
  FALLBACK_IMPLEMENTATION void PLAT_setPlayersActive(int active) {}

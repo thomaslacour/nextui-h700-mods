@@ -1,8 +1,8 @@
 diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
-index 1e3bf856..9f1f1c18 100644
+index d73c511a..005c41be 100644
 --- a/workspace/all/common/api.c
 +++ b/workspace/all/common/api.c
-@@ -3739,6 +3739,9 @@ FALLBACK_IMPLEMENTATION int PLAT_lidChanged(int *state) { return 0; }
+@@ -3755,6 +3755,9 @@ FALLBACK_IMPLEMENTATION int PLAT_lidChanged(int *state) { return 0; }
  ///////////////////////////////
  
  PAD_Context pad;

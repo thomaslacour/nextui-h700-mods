@@ -1,5 +1,5 @@
 diff --git a/workspace/all/nextui/nextui.c b/workspace/all/nextui/nextui.c
-index 78f1fe1..6cd13ff 100644
+index 78f1fe17..6cd13ff9 100644
 --- a/workspace/all/nextui/nextui.c
 +++ b/workspace/all/nextui/nextui.c
 @@ -1012,6 +1012,8 @@ static void addEntries(Array* entries, char* path) {
@@ -13,7 +13,7 @@ index 78f1fe1..6cd13ff 100644
  			int type;
 diff --git a/workspace/all/settings/clockmenu.cpp b/workspace/all/settings/clockmenu.cpp
 new file mode 100644
-index 0000000..6955007
+index 00000000..69550075
 --- /dev/null
 +++ b/workspace/all/settings/clockmenu.cpp
 @@ -0,0 +1,176 @@
@@ -195,7 +195,7 @@ index 0000000..6955007
 +}
 diff --git a/workspace/all/settings/clockmenu.hpp b/workspace/all/settings/clockmenu.hpp
 new file mode 100644
-index 0000000..c65c73b
+index 00000000..c65c73b4
 --- /dev/null
 +++ b/workspace/all/settings/clockmenu.hpp
 @@ -0,0 +1,27 @@
@@ -228,7 +228,7 @@ index 0000000..c65c73b
 +}
 diff --git a/workspace/all/settings/controllermenu.cpp b/workspace/all/settings/controllermenu.cpp
 new file mode 100644
-index 0000000..289ef05
+index 00000000..289ef058
 --- /dev/null
 +++ b/workspace/all/settings/controllermenu.cpp
 @@ -0,0 +1,98 @@
@@ -332,7 +332,7 @@ index 0000000..289ef05
 +}
 diff --git a/workspace/all/settings/controllermenu.hpp b/workspace/all/settings/controllermenu.hpp
 new file mode 100644
-index 0000000..1fe2655
+index 00000000..1fe26553
 --- /dev/null
 +++ b/workspace/all/settings/controllermenu.hpp
 @@ -0,0 +1,22 @@
@@ -359,7 +359,7 @@ index 0000000..1fe2655
 +    void runQueued();
 +}
 diff --git a/workspace/all/settings/makefile b/workspace/all/settings/makefile
-index f77198a..08f7e20 100644
+index f77198a7..08f7e200 100644
 --- a/workspace/all/settings/makefile
 +++ b/workspace/all/settings/makefile
 @@ -22,7 +22,7 @@ SDL?=SDL
@@ -372,7 +372,7 @@ index f77198a..08f7e20 100644
  
  CC = $(CROSS_COMPILE)gcc
 diff --git a/workspace/all/settings/settings.cpp b/workspace/all/settings/settings.cpp
-index 4a17436..678f71e 100644
+index 4a17436d..678f71e5 100644
 --- a/workspace/all/settings/settings.cpp
 +++ b/workspace/all/settings/settings.cpp
 @@ -24,6 +24,8 @@ extern "C"

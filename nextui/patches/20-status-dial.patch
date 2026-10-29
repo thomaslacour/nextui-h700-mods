@@ -1,5 +1,5 @@
 diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
-index e107225d..c5f5f41b 100644
+index e107225d..b12aac0e 100644
 --- a/workspace/all/common/api.c
 +++ b/workspace/all/common/api.c
 @@ -2356,141 +2356,523 @@ SDL_Surface* GFX_createScreenFormatSurface(int width, int height)
@@ -505,7 +505,9 @@ index e107225d..c5f5f41b 100644
 +	const float beam[8] = {SS_X(4.2f), SS_Y(1.9f), SS_X(13.8f), SS_Y(0.4f), SS_X(13.8f), SS_Y(3.6f), SS_X(4.2f), SS_Y(5.1f)};
 +	SS_poly(p->l, beam, 4, p->ink);
 +}
-+
+ 
+-			int battery_x = ox;
+-			int battery_y = oy + (SCALE1(PILL_SIZE) - battery_rect.h) / 2;
 +static int SS_always(void) { return 1; }
 +static int SS_musicShown(void) { return SS_music; }
 +static int SS_vpnShown(void) { return SS_vpn != SS_VPN_OFF; }
@@ -515,8 +517,8 @@ index e107225d..c5f5f41b 100644
 +static int SS_updateShown(void) { return SS_update; }
 +static int SS_alertShown(void) { return SS_syncAlert; }
  
--			int battery_x = ox;
--			int battery_y = oy + (SCALE1(PILL_SIZE) - battery_rect.h) / 2;
+-			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
+-			ox += battery_rect.w + SCALE1(BUTTON_MARGIN);
 +// Icônes, de droite à gauche : largeur (unités), condition d'affichage, dessin.
 +static const struct { float w; int (*shown)(void); void (*draw)(const SS_Pen *); } SS_ICONS[] = {
 +	{22, SS_always, SS_drawBattery},
@@ -592,14 +594,6 @@ index e107225d..c5f5f41b 100644
 +	return cache;
 +}
  
--			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
--			ox += battery_rect.w + SCALE1(BUTTON_MARGIN);
-+int GFX_blitHardwareGroup(SDL_Surface *dst, int show_setting)
-+{
-+	int ox;
-+	int oy;
-+	int ow = 0;
- 
 -			if (show_clock && clock)
 -			{
 -				int x = ox;
@@ -608,6 +602,12 @@ index e107225d..c5f5f41b 100644
 -				SDL_FreeSurface(clock);
 -			}
 -		}
++int GFX_blitHardwareGroup(SDL_Surface *dst, int show_setting)
++{
++	int ox;
++	int oy;
++	int ow = 0;
++
 +	if (show_setting && !GetHDMI())
 +	{
 +		// Use the helper function to render the indicator at the standard position

@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# ci.sh — lancé par GitHub Actions dans le dépôt public NextUI mods
-# (.github/workflows/nextui-mods.yml, copié par mac/publish-nextui-mods.sh).
+# ci.sh — run by GitHub Actions in the public NextUI mods repo
+# (.github/workflows/nextui-mods.yml, copied by mac/publish-nextui-mods.sh).
 #
-#   nextui/ci.sh [--force] [tag…]     défaut : latest et la version de TARGET
+#   nextui/ci.sh [--force] [tag…]     default: latest and the TARGET version
 #
-# Pour chaque version de NextUI : compile nos binaires (build.sh, Docker) et
-# publie une release nommée d'après l'identifiant de build (ex.
-# NextUI-20261013-0, ligne 1 de .system/version.txt sur la console) :
+# For each NextUI release: build our binaries (build.sh, Docker) and publish a
+# release named after the build ID (e.g. NextUI-20261013-0, line 1 of
+# .system/version.txt on the console):
 #
-#   nextui-mods-<build>.tar   la réserve telle quelle (fichiers à plat)
-#   SHA256SUMS                son empreinte
+#   nextui-mods-<build>.tar   the reserve as-is (flat files)
+#   SHA256SUMS                its checksum
 #
-# La console (nextui-mods/fetch.sh) la télécharge quand cette version sort,
-# vérifie l'empreinte contre celle que GitHub annonce, puis la range dans sa
-# réserve : la garde pose les binaires au premier démarrage de la nouvelle
-# version. Une release déjà publiée avec la même empreinte de patches
-# (patchset.sh) n'est pas recompilée ; sinon ses fichiers sont remplacés.
-# Un patch qui ne s'applique plus fait échouer le workflow (courriel de
-# GitHub) : rien n'est publié, la console reste « NOT PREPARED ».
+# The console (nextui-mods/fetch.sh) downloads it when that version comes out,
+# checks the checksum against the one GitHub reports, then stores it in its
+# reserve: the guard installs the binaries on the first boot of the new
+# version. A release already published with the same patch hash (patchset.sh)
+# is not rebuilt; otherwise its files are replaced. A patch that no longer
+# applies fails the workflow (GitHub email): nothing is published and the
+# console stays "NOT PREPARED".
 set -euo pipefail
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -25,7 +25,7 @@ FILES=(nextui.elf minarch.elf clock.elf battery.elf settings.elf minui-list minu
 FORCE=no
 [ "${1:-}" = --force ] && { FORCE=yes; shift; }
 [ $# -gt 0 ] || set -- latest "$(tr -d '\r\n' < "$HERE/TARGET")"
-: "${GH_TOKEN:?GH_TOKEN manquant}"
+: "${GH_TOKEN:?GH_TOKEN missing}"
 export GITHUB_TOKEN="$GH_TOKEN" CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}" NEXTUI_FETCH_DEPTH=1
 export NEXTUI_SRC="${NEXTUI_SRC:-${RUNNER_TEMP:-/tmp}/nextui-src}"
 [ -d "$NEXTUI_SRC/.git" ] || git init -q "$NEXTUI_SRC"
@@ -37,23 +37,23 @@ done_ids=" "
 for want in "$@"; do
   tag="$want"
   [ "$tag" = latest ] && tag="$(api latest | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
-  [ -n "$tag" ] || { echo "ERROR: release NextUI introuvable ($want)" >&2; exit 1; }
+  [ -n "$tag" ] || { echo "ERROR: NextUI release not found ($want)" >&2; exit 1; }
   id="$(api "tags/$tag" | sed -n 's/^ *"name": *"\(NextUI-[0-9]*-[0-9]*\)-.*/\1/p' | head -1)"
-  [ -n "$id" ] || { echo "ERROR: identifiant de build introuvable pour $tag" >&2; exit 1; }
+  [ -n "$id" ] || { echo "ERROR: build ID not found for $tag" >&2; exit 1; }
   case "$done_ids" in *" $id "*) continue ;; esac
   done_ids="$done_ids$id "
 
   published="$(gh release view "$id" --json body -q .body 2>/dev/null | sed -n 's/^patchset: //p' || true)"
   if [ "$FORCE" = no ] && [ "$published" = "$PATCHSET" ]; then
-    echo "→ $tag ($id) : déjà publiée avec les patches $PATCHSET"
+    echo "→ $tag ($id): already published with patches $PATCHSET"
     continue
   fi
 
-  echo "→ $tag ($id) : compilation (patches $PATCHSET)"
+  echo "→ $tag ($id): building (patches $PATCHSET)"
   "$HERE/build.sh" "$tag"
   out="$ROOT/build/nextui/$id"
-  for f in "${FILES[@]}"; do [ -s "$out/$f" ] || { echo "ERROR: $f absent de $out" >&2; exit 1; }; done
-  [ "$(cut -d' ' -f1 "$out/SOURCE")" = "$tag" ] || { echo "ERROR: SOURCE ne correspond pas à $tag" >&2; exit 1; }
+  for f in "${FILES[@]}"; do [ -s "$out/$f" ] || { echo "ERROR: $f missing from $out" >&2; exit 1; }; done
+  [ "$(cut -d' ' -f1 "$out/SOURCE")" = "$tag" ] || { echo "ERROR: SOURCE does not match $tag" >&2; exit 1; }
 
   dist="$ROOT/build/dist/$id"
   rm -rf "$dist"; mkdir -p "$dist"
@@ -69,5 +69,5 @@ for want in "$@"; do
     gh release create "$id" "$dist/nextui-mods-$id.tar" "$dist/SHA256SUMS" \
       --title "$tag ($id)" --notes "$notes" ${GITHUB_SHA:+--target "$GITHUB_SHA"}
   fi
-  echo "→ publiée : $id ($(cut -d' ' -f1 "$dist/SHA256SUMS" | cut -c1-16))"
+  echo "→ published: $id ($(cut -d' ' -f1 "$dist/SHA256SUMS" | cut -c1-16))"
 done

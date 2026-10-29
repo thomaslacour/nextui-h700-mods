@@ -1,29 +1,28 @@
 # NextUI H700 mods
 
-Modifications de [NextUI](https://github.com/LoveRetro/NextUI) pour une
-Anbernic RG35XX SP (H700), compilées par GitHub Actions pour chaque release
-de NextUI : launcher (cadran d'état, MENU → Tools), menu en jeu, Clock,
-Battery, Settings et les briques `minui-list` / `minui-presenter`.
+Modifications to [NextUI](https://github.com/LoveRetro/NextUI) for an
+Anbernic RG35XX SP (H700), built by GitHub Actions for every NextUI release:
+launcher (status dial, MENU → Tools), in-game menu, Clock, Battery, Settings,
+and the `minui-list` / `minui-presenter` bricks.
 
-Ce dépôt est **généré** depuis un projet privé (`mac/publish-nextui-mods.sh`) :
-ne pas le modifier ici.
+This repository is **generated** from a private project
+(`mac/publish-nextui-mods.sh`): do not edit it here.
 
-| Chemin | Rôle |
+| Path | Role |
 | --- | --- |
-| `nextui/patches/` | patches appliqués au tag officiel de NextUI |
-| `nextui/build.sh` | compilation dans la toolchain officielle (`ghcr.io/loveretro/h700-toolchain`) |
-| `nextui/ci.sh` | compile et publie une release par version de NextUI |
-| `nextui/patchset.sh` | empreinte des patches (une release à jour n'est pas recompilée) |
+| `nextui/patches/` | patches applied to the official NextUI tag |
+| `nextui/build.sh` | build in the official toolchain (`ghcr.io/loveretro/h700-toolchain`) |
+| `nextui/ci.sh` | builds and publishes one release per NextUI version |
+| `nextui/patchset.sh` | patch hash (an up-to-date release is not rebuilt) |
 
-Chaque release `NextUI-<date>-<n>` contient `nextui-mods-<build>.tar` (les
-binaires, `SOURCE` = tag et commit NextUI compilés, `PATCHSET`) et
-`SHA256SUMS`. La console la télécharge elle-même quand cette version de
-NextUI sort, vérifie l'empreinte (SHA256SUMS et empreinte annoncée par
-GitHub), et la garde la pose au premier démarrage de la nouvelle version.
+Each `NextUI-<date>-<n>` release holds `nextui-mods-<build>.tar` (the
+binaries, `SOURCE` = NextUI tag and commit built, `PATCHSET`) and
+`SHA256SUMS`. The console downloads it by itself when that NextUI version
+comes out, checks the checksum (SHA256SUMS and the checksum GitHub reports),
+and its guard installs it on the first boot of the new version.
 
-Compilation : chaque jour toutes les 6 h (nouvelle release de NextUI), à
-chaque changement de `nextui/`, ou à la main (Actions → NextUI mods → Run
-workflow, avec un tag et « force »).
+Builds run every 6 hours (new NextUI release), on every change to `nextui/`,
+or by hand (Actions → NextUI mods → Run workflow, with a tag and "force").
 
-Licences : patches et binaires suivent celles des projets d'origine (NextUI,
+Licenses: patches and binaries follow those of the original projects (NextUI,
 minui-list, minui-presenter).
