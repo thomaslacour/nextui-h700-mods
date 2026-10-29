@@ -1,0 +1,274 @@
+diff --git a/workspace/h700/platform/platform.c b/workspace/h700/platform/platform.c
+index 8278a9a0..1aaf32be 100644
+--- a/workspace/h700/platform/platform.c
++++ b/workspace/h700/platform/platform.c
+@@ -68,6 +68,26 @@ struct input_event {
+ static int input_fds[H700_INPUT_COUNT];
+ static uint32_t last_input_scan = 0;
+ 
++// External pads (a joystick node other than the built-in pad) are read through
++// SDL (GameController); reading their raw codes here too would apply the
++// built-in layout to them (8BitDo L1 = 310 = SELECT, L2 = 312 = MENU, right
++// stick on the built-in axis codes...). Keyboards have no js node: kept.
++#define INPUT_SKIPPED -2
++static int is_builtin_pad(const char *name);
++static int is_external_pad(int i, const char *name) {
++	char dir_path[96];
++	snprintf(dir_path, sizeof(dir_path), "/sys/class/input/event%i/device", i);
++	DIR *dir = opendir(dir_path);
++	if (!dir)
++		return 0;
++	int js = 0;
++	struct dirent *e;
++	while (!js && (e = readdir(dir)))
++		js = strncmp(e->d_name, "js", 2) == 0;
++	closedir(dir);
++	return js && !is_builtin_pad(name);
++}
++
+ static void close_evdev_input(int i) {
+ 	if (i < 0 || i >= H700_INPUT_COUNT || input_fds[i] < 0)
+ 		return;
+@@ -87,6 +107,13 @@ static void open_evdev_input(int i) {
+ 	char name[256] = {0};
+ 	snprintf(name_path, sizeof(name_path), "/sys/class/input/event%i/device/name", i);
+ 	getFile(name_path, name, sizeof(name));
++	name[strcspn(name, "\n")] = 0;
++	if (is_external_pad(i, name)) {
++		close(input_fds[i]);
++		input_fds[i] = INPUT_SKIPPED;
++		LOG_info("Skipping input event%i: %s (external pad, read via SDL)\n", i, name);
++		return;
++	}
+ 	if (name[0])
+ 		LOG_info("Opening input event%i: %s\n", i, name);
+ 	else
+@@ -103,10 +130,12 @@ static void scan_evdev_inputs(void) {
+ 		char path[64];
+ 		snprintf(path, sizeof(path), "/dev/input/event%i", i);
+ 		int connected = exists(path);
+-		if (input_fds[i] < 0 && connected)
++		if (input_fds[i] == -1 && connected)
+ 			open_evdev_input(i);
+ 		else if (input_fds[i] >= 0 && !connected)
+ 			close_evdev_input(i);
++		else if (input_fds[i] == INPUT_SKIPPED && !connected)
++			input_fds[i] = -1;
+ 	}
+ }
+ 
+@@ -280,14 +309,114 @@ static int is_builtin_pad(const char *name) {
+ 	return name && strcmp(name, "ANBERNIC-keys") == 0;
+ }
+ 
++// External pads known to the SDL GameController database (USERDATA_PATH/
++// gamecontrollerdb.txt, installed from the Mac) are read through the
++// GameController API: buttons by position whatever the pad (8BitDo, Xbox,
++// PlayStation, Switch Pro...), Home = MENU, analog triggers = L2/R2 and both
++// sticks analog. Face buttons: in the launcher and paks, Xbox style like the
++// database itself (bottom = A, so the bottom button confirms); in games
++// (minarch) by position like the built-in pad (bottom = B, right = A, left = Y,
++// top = X), so a PS1 game gets Cross at the bottom, Circle on the right.
++// Unknown pads keep the raw joystick path (JOY_* layout).
++#define PAD_DB_PATH USERDATA_PATH "/gamecontrollerdb.txt"
++#define MAX_CONTROLLERS 8
++#define TRIGGER_PRESS 16384
++static SDL_GameController *controllers[MAX_CONTROLLERS];
++static int num_controllers = 0;
++
++static int controller_slot(SDL_JoystickID which) {
++	for (int i = 0; i < num_controllers; i++)
++		if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controllers[i])) == which)
++			return i;
++	return -1;
++}
++
++// Opens device <index> as a GameController when the database knows it.
++static int open_controller(int index) {
++	if (!SDL_IsGameController(index) || num_controllers >= MAX_CONTROLLERS)
++		return 0;
++	SDL_GameController *gc = SDL_GameControllerOpen(index);
++	if (!gc) {
++		LOG_error("Failed to open game controller %d: %s\n", index, SDL_GetError());
++		return 0;
++	}
++	controllers[num_controllers++] = gc;
++	LOG_info("Opening game controller %d: %s\n", index, SDL_GameControllerName(gc));
++	return 1;
++}
++
++static void close_controller(int slot) {
++	LOG_info("Closing game controller: %s\n", SDL_GameControllerName(controllers[slot]));
++	SDL_GameControllerClose(controllers[slot]);
++	for (int j = slot; j < num_controllers - 1; j++)
++		controllers[j] = controllers[j + 1];
++	num_controllers--;
++}
++
++extern char *program_invocation_short_name; // glibc
++static int controller_positional(void) {
++	static int positional = -1;
++	if (positional < 0)
++		positional = strcmp(program_invocation_short_name, "minarch.elf") == 0;
++	return positional;
++}
++
++static int button_from_controller(int b, int *id) {
++	if (controller_positional()) {
++		switch (b) {
++		case SDL_CONTROLLER_BUTTON_A: b = SDL_CONTROLLER_BUTTON_B; break;
++		case SDL_CONTROLLER_BUTTON_B: b = SDL_CONTROLLER_BUTTON_A; break;
++		case SDL_CONTROLLER_BUTTON_X: b = SDL_CONTROLLER_BUTTON_Y; break;
++		case SDL_CONTROLLER_BUTTON_Y: b = SDL_CONTROLLER_BUTTON_X; break;
++		}
++	}
++	switch (b) {
++	case SDL_CONTROLLER_BUTTON_DPAD_UP:       *id = BTN_ID_DPAD_UP;    return BTN_DPAD_UP;
++	case SDL_CONTROLLER_BUTTON_DPAD_DOWN:     *id = BTN_ID_DPAD_DOWN;  return BTN_DPAD_DOWN;
++	case SDL_CONTROLLER_BUTTON_DPAD_LEFT:     *id = BTN_ID_DPAD_LEFT;  return BTN_DPAD_LEFT;
++	case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    *id = BTN_ID_DPAD_RIGHT; return BTN_DPAD_RIGHT;
++	case SDL_CONTROLLER_BUTTON_A:             *id = BTN_ID_A;          return BTN_A;
++	case SDL_CONTROLLER_BUTTON_B:             *id = BTN_ID_B;          return BTN_B;
++	case SDL_CONTROLLER_BUTTON_X:             *id = BTN_ID_X;          return BTN_X;
++	case SDL_CONTROLLER_BUTTON_Y:             *id = BTN_ID_Y;          return BTN_Y;
++	case SDL_CONTROLLER_BUTTON_BACK:          *id = BTN_ID_SELECT;     return BTN_SELECT;
++	case SDL_CONTROLLER_BUTTON_START:         *id = BTN_ID_START;      return BTN_START;
++	case SDL_CONTROLLER_BUTTON_GUIDE:         *id = BTN_ID_MENU;       return BTN_MENU;
++	case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  *id = BTN_ID_L1;         return BTN_L1;
++	case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: *id = BTN_ID_R1;         return BTN_R1;
++	case SDL_CONTROLLER_BUTTON_LEFTSTICK:     *id = BTN_ID_L3;         return BTN_L3;
++	case SDL_CONTROLLER_BUTTON_RIGHTSTICK:    *id = BTN_ID_R3;         return BTN_R3;
++	default:                                  *id = -1;                return BTN_NONE;
++	}
++}
++
++static void apply_controller_axis(int axis, int val, uint32_t tick) {
++	switch (axis) {
++	case SDL_CONTROLLER_AXIS_LEFTX:
++		pad.laxis.x = val;
++		PAD_setAnalog(BTN_ID_ANALOG_LEFT, BTN_ID_ANALOG_RIGHT, val, tick + PAD_REPEAT_DELAY);
++		break;
++	case SDL_CONTROLLER_AXIS_LEFTY:
++		pad.laxis.y = val;
++		PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, val, tick + PAD_REPEAT_DELAY);
++		break;
++	case SDL_CONTROLLER_AXIS_RIGHTX: pad.raxis.x = val; break;
++	case SDL_CONTROLLER_AXIS_RIGHTY: pad.raxis.y = val; break;
++	case SDL_CONTROLLER_AXIS_TRIGGERLEFT:  apply_button_state(BTN_L2, BTN_ID_L2, val > TRIGGER_PRESS, tick); break;
++	case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: apply_button_state(BTN_R2, BTN_ID_R2, val > TRIGGER_PRESS, tick); break;
++	}
++}
++
+ void PLAT_initInput(void) {
+ 	detect_device();
+ 	for (int i = 0; i < H700_INPUT_COUNT; i++)
+ 		input_fds[i] = -1;
+ 	last_input_scan = 0;
+ 
+-	if(SDL_InitSubSystem(SDL_INIT_JOYSTICK) < 0)
++	if(SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0)
+ 		LOG_error("Failed initializing joysticks: %s\n", SDL_GetError());
++	if (exists(PAD_DB_PATH))
++		LOG_info("Pad database: %i mappings\n", SDL_GameControllerAddMappingsFromFile(PAD_DB_PATH));
+ 	SDL_JoystickEventState(SDL_ENABLE);
+ 	int total = SDL_NumJoysticks();
+     if (total > 0) {
+@@ -298,6 +427,8 @@ void PLAT_initInput(void) {
+ 				LOG_info("Skipping built-in joystick %d: %s (handled via evdev)\n", i, name);
+ 				continue;
+ 			}
++			if (open_controller(i))
++				continue;
+ 			SDL_Joystick *joy = SDL_JoystickOpen(i);
+ 			if (!joy) {
+ 				LOG_error("Failed to open joystick %d: %s\n", i, SDL_GetError());
+@@ -325,11 +456,13 @@ void PLAT_quitInput(void) {
+         joysticks = NULL;
+         num_joysticks = 0;
+ 	}
++	while (num_controllers > 0)
++		close_controller(num_controllers - 1);
+ 	if (wake_fd >= 0) {
+ 		close(wake_fd);
+ 		wake_fd = -1;
+ 	}
+-	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
++	SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
+ }
+ 
+ static void poll_sdl_input(uint32_t tick) {
+@@ -339,6 +472,25 @@ static void poll_sdl_input(uint32_t tick) {
+ 		int pressed = 0;
+ 		int id = -1;
+ 
++		// A pad opened as a GameController also sends raw joystick events:
++		// only its controller events count.
++		if (((event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) && controller_slot(event.jbutton.which) >= 0)
++			|| (event.type == SDL_JOYHATMOTION && controller_slot(event.jhat.which) >= 0)
++			|| (event.type == SDL_JOYAXISMOTION && controller_slot(event.jaxis.which) >= 0))
++			continue;
++		if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
++			btn = button_from_controller(event.cbutton.button, &id);
++			apply_button_state(btn, id, event.type == SDL_CONTROLLERBUTTONDOWN, tick);
++			continue;
++		}
++		if (event.type == SDL_CONTROLLERAXISMOTION) {
++			apply_controller_axis(event.caxis.axis, event.caxis.value, tick);
++			continue;
++		}
++		if (event.type == SDL_CONTROLLERDEVICEADDED || event.type == SDL_CONTROLLERDEVICEREMOVED
++			|| event.type == SDL_CONTROLLERDEVICEREMAPPED)
++			continue; // handled through the SDL_JOYDEVICE* events below
++
+ 		if (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) {
+ 			pressed = event.type == SDL_JOYBUTTONDOWN;
+ 			btn = button_from_joy(event.jbutton.button, &id);
+@@ -365,21 +517,23 @@ static void poll_sdl_input(uint32_t tick) {
+ 				id = BTN_ID_R2;
+ 				pressed = val > 0;
+ 			}
+-			else if (axis == AXIS_LX) {
++			// External pads only reach this path: sticks on axes 0-3 even
++			// when the console itself has none (AXIS_LX... are per-SKU).
++			else if (axis == 0) {
+ 				pad.laxis.x = val;
+ 				PAD_setAnalog(BTN_ID_ANALOG_LEFT, BTN_ID_ANALOG_RIGHT, val, tick + PAD_REPEAT_DELAY);
+ 				continue;
+ 			}
+-			else if (axis == AXIS_LY) {
++			else if (axis == 1) {
+ 				pad.laxis.y = val;
+ 				PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, val, tick + PAD_REPEAT_DELAY);
+ 				continue;
+ 			}
+-			else if (axis == AXIS_RX) {
++			else if (axis == 2) {
+ 				pad.raxis.x = val;
+ 				continue;
+ 			}
+-			else if (axis == AXIS_RY) {
++			else if (axis == 3) {
+ 				pad.raxis.y = val;
+ 				continue;
+ 			}
+@@ -514,6 +668,8 @@ void PLAT_updateInput(const SDL_Event *event) {
+             LOG_info("Skipping built-in joystick %d: %s (handled via evdev)\n", device_index, name);
+             break;
+         }
++        if (open_controller(device_index))
++            break;
+         SDL_Joystick *new_joy = SDL_JoystickOpen(device_index);
+         if (new_joy) {
+             joysticks = realloc(joysticks, sizeof(SDL_Joystick *) * (num_joysticks + 1));
+@@ -527,6 +683,11 @@ void PLAT_updateInput(const SDL_Event *event) {
+ 
+     case SDL_JOYDEVICEREMOVED: {
+         SDL_JoystickID removed_id = event->jdevice.which;
++        int slot = controller_slot(removed_id);
++        if (slot >= 0) {
++            close_controller(slot);
++            break;
++        }
+         for (int i = 0; i < num_joysticks; ++i) {
+             if (SDL_JoystickInstanceID(joysticks[i]) == removed_id) {
+                 LOG_info("Joystick removed: %s\n", SDL_JoystickName(joysticks[i]));

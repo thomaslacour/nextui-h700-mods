@@ -1,0 +1,67 @@
+Patch Save Sync pour le launcher NextUI (branche h700)
+======================================================
+
+Objet    : la touche MENU du launcher ouvre directement la liste "Tools"
+           (répertoire /mnt/SDCARD/Tools/h700) au lieu du popup "Quick Menu".
+           Combiné à "tools=0" dans minuisettings.txt (réglage « Show Tools »
+           des Settings), l'entrée Tools disparaît du menu principal et reste
+           accessible en un bouton.
+
+Base     : pvaibhav/NextUI, branche h700, commit fa49d74e
+           (workspace/all/nextui/nextui.c, index 90c56739)
+Cible    : Anbernic RG35XX SP, SoC Allwinner H700, NextUI 20261013
+
+Contenu  : une seule zone modifiée, dans la boucle d'entrée de SCREEN_GAMELIST
+           (fonction main, ~ligne 2494) :
+             - avant : un appui MENU ouvrait SCREEN_QUICKMENU (popup d'icônes) ;
+             - après : un appui MENU ouvre le répertoire Tools comme n'importe
+               quel dossier de la liste (Entry_open sur ENTRY_DIR), et ne fait
+               rien si l'on y est déjà.
+           Rien d'autre n'est touché : le code du Quick Menu reste en place mais
+           n'est plus atteignable depuis le launcher.
+
+Application :
+           git -C <dépôt NextUI> apply -p1 nextui-MENU-opens-Tools.patch
+           (ou ./build.sh, qui applique le patch dans un worktree jetable)
+
+Retour arrière : nextui/build.sh recompile depuis le commit de base sans patch,
+           ou restaurer la sauvegarde faite par mac/install-nextui.sh --restore.
+
+diff --git a/workspace/all/nextui/nextui.c b/workspace/all/nextui/nextui.c
+index 90c56739..0306ad30 100644
+--- a/workspace/all/nextui/nextui.c
++++ b/workspace/all/nextui/nextui.c
+@@ -2494,15 +2494,25 @@ int main (int argc, char *argv[]) {
+ 			}
+ 		}
+ 		else {
++			/* MinUI-style launcher: no Quick Menu popup on MENU. Tools are still
++			 * one button away: a MENU tap opens the Tools directory itself, the
++			 * very same list the "Tools" root entry used to show. Combine with
++			 * "tools=0" in minuisettings.txt to keep Tools out of the main menu. */
+ 			if (PAD_tappedMenu(now)) {
+-				currentScreen = SCREEN_QUICKMENU;
+-				qm_col = 0;
+-				qm_row = 0;
+-				qm_shift = 0;
+-				qm_slot = 0;
+-				dirty = 1;
+-				folderbgchanged = 1; // The background painting code is a clusterfuck, just force a repaint here
+-				if (!HAS_POWER_BUTTON && !simple_mode) PWR_enableSleep();
++				if (hasTools()) {
++					char tools_path[256];
++					snprintf(tools_path, sizeof(tools_path), "%s/Tools/%s", SDCARD_PATH, PLATFORM);
++					if (!exactMatch(top->path, tools_path)) {
++						restore_depth = -1; // do not restore the list state we are leaving
++						restore_relative = -1;
++						Entry* tools = Entry_new(tools_path, ENTRY_DIR);
++						Entry_open(tools);
++						Entry_free(tools);
++						selected = top->selected; // openDirectory() already seeded it
++						folderbgchanged = 1; // The background painting code is a clusterfuck, just force a repaint here
++						dirty = 1;
++					}
++				}
+ 			}
+ 			else if (PAD_tappedSelect(now)) {
+ 				currentScreen = SCREEN_GAMESWITCHER;

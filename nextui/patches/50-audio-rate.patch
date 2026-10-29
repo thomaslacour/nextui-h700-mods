@@ -1,0 +1,131 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index e107225d..e9c15352 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -2690,6 +2690,7 @@ SDL_Color GFX_mapColor(uint32_t c)
+ 
+ pthread_mutex_t audio_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
++static volatile unsigned snd_starved = 0;
+ static void SND_audioCallback(void *userdata, uint8_t *stream, int len)
+ {
+ 	if (snd.frame_count == 0)
+@@ -2712,8 +2713,10 @@ static void SND_audioCallback(void *userdata, uint8_t *stream, int len)
+ 	}
+ 	pthread_mutex_unlock(&audio_mutex);
+ 
+-	if (len > 0)
++	if (len > 0) {
+ 		memset(out, 0, len * (sizeof(int16_t) * 2));
++		snd_starved++; // Save Sync : silences dus à un tampon vide (journal, mode stable)
++	}
+ }
+ static void SND_resizeBuffer(void)
+ { // plat_sound_resize_buffer
+@@ -2930,6 +2933,23 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
+ 		snd.frame_count = 4096; // idk some random samples nr this should never hit tho, just to be safe
+ 	}
+ 
++	// Save Sync : synchro audio (MINARCH_AUDIO_STABLE) : au-delà de 60 % de
++	// remplissage, on attend que la sortie consomme (au plus 50 ms). C'est
++	// alors le son qui cadence l'émulation (vitesse exacte, hauteur fixe) ; les
++	// images sautées n'attendant plus l'écran, le cœur rattrape après un pic.
++	static int audio_sync = -1;
++	if (audio_sync < 0) audio_sync = getenv("MINARCH_AUDIO_STABLE") != NULL;
++	if (audio_sync && snd.frame_count > 0) {
++		for (int waited = 0; waited < 50; waited++) {
++			pthread_mutex_lock(&audio_mutex);
++			int used = snd.frame_in - snd.frame_out;
++			if (used < 0) used += snd.frame_count;
++			pthread_mutex_unlock(&audio_mutex);
++			if (used <= snd.frame_count * 0.6f) break;
++			usleep(1000);
++		}
++	}
++
+ 	pthread_mutex_lock(&audio_mutex);
+ 	if (snd.frame_in < 0 || snd.frame_in >= snd.frame_count)
+ 	{
+@@ -2989,6 +3009,33 @@ size_t SND_batchSamples(const SND_Frame *frames, size_t frame_count)
+ 	{
+ 		safe_ratio = 1.0f;
+ 	}
++	// Save Sync : MINARCH_AUDIO_STABLE (pak MELONDS) — synchro audio, comme
++	// RetroArch sur les machines lentes : rapport de rééchantillonnage fixe
++	// (hauteur exacte ; toute correction de vitesse s'entendait), débit tenu
++	// par l'attente en début de fonction et par le saut d'images du cœur, à qui
++	// l'on publie le remplissage du tampon (0 à 1) via MINARCH_AUDIO_FILL.
++	static int audio_stable = -1;
++	if (audio_stable < 0) audio_stable = getenv("MINARCH_AUDIO_STABLE") != NULL;
++	if (audio_stable) {
++		static volatile float fill_pub = 0.5f;
++		static int fill_published = 0;
++		float fill = (snd.frame_count - remaining_space) / (float)snd.frame_count;
++		fill_pub = fill;
++		if (!fill_published) {
++			char addr[32];
++			snprintf(addr, sizeof(addr), "%p", (void *)&fill_pub);
++			setenv("MINARCH_AUDIO_FILL", addr, 1);
++			fill_published = 1;
++		}
++		safe_ratio = 1.0f;
++		bufferadjustment = 0.0f;
++		static unsigned last_starved = 0, batches = 0;
++		if (++batches % 3000 == 0 && snd_starved != last_starved) {
++			LOG_info("audio: %u silence(s) (tampon vide), remplissage %.0f%%\n",
++			         snd_starved - last_starved, fill * 100.0f);
++			last_starved = snd_starved;
++		}
++	}
+ 
+ 	ratio = safe_ratio + bufferadjustment;
+ 
+@@ -3204,9 +3251,21 @@ void SND_init(double sample_rate, double frame_rate)
+ 	SDL_AudioSpec spec_out;
+ 
+ 	spec_in.freq = PLAT_pickSampleRate(sample_rate, MAX_SAMPLE_RATE);
++	// Save Sync : débit de sortie imposé (MINARCH_AUDIO_RATE, pak MELONDS). Le
++	// cœur DS sort 32728 Hz, que la puce n'accepte pas : SDL retombait sur
++	// 32000 Hz, rééchantillonné de très près et audiblement instable (souffle,
++	// hauteur qui ondule). 48000 Hz est le débit natif de la puce.
++	const char* forced_rate = getenv("MINARCH_AUDIO_RATE");
++	if (forced_rate && atoi(forced_rate) > 0) spec_in.freq = atoi(forced_rate);
++	// Tampons plus larges (MINARCH_AUDIO_SAMPLES, MINARCH_AUDIO_BUFFER en images) :
++	// une image d'émulation plus longue vidait le tampon de 8 images et minarch
++	// coupait le son le temps de le remplir (« sursauts »).
++	const char* forced_samples = getenv("MINARCH_AUDIO_SAMPLES");
++	const char* forced_buffer = getenv("MINARCH_AUDIO_BUFFER");
++	int buffer_frames = (forced_buffer && atoi(forced_buffer) > 0) ? atoi(forced_buffer) : 8;
+ 	spec_in.format = AUDIO_S16;
+ 	spec_in.channels = 2;
+-	spec_in.samples = SAMPLES;
++	spec_in.samples = (forced_samples && atoi(forced_samples) > 0) ? atoi(forced_samples) : SAMPLES;
+ 	spec_in.callback = SND_audioCallback;
+ 
+ #if defined(USE_SDL2)
+@@ -3231,7 +3290,7 @@ void SND_init(double sample_rate, double frame_rate)
+ 
+ 	LOG_info("We now have audio device #%d\n", snd.device_id);
+ 
+-	snd.frame_count = ((float)spec_out.freq / SCREEN_FPS) * 8; // buffer size based on sample rate out (times 12 samples headroom)
++	snd.frame_count = ((float)spec_out.freq / SCREEN_FPS) * buffer_frames; // buffer size based on sample rate out (times 12 samples headroom)
+ 	perf.buffer_size = snd.frame_count;
+ 	snd.sample_rate_in = sample_rate;
+ 	snd.sample_rate_out = spec_out.freq;
+diff --git a/workspace/all/minarch/ma_video.c b/workspace/all/minarch/ma_video.c
+index edee20f2..2db81385 100644
+--- a/workspace/all/minarch/ma_video.c
++++ b/workspace/all/minarch/ma_video.c
+@@ -962,6 +962,12 @@ void video_refresh_callback(const void* data, unsigned width, unsigned height, s
+ 	}
+ 
+ 	// Handle NULL data by reusing last frame
++	// Save Sync : en synchro audio (MINARCH_AUDIO_STABLE), une image vide
++	// (« dupe », image sautée par le cœur) n'est pas réaffichée : pas d'attente
++	// de la synchro verticale, l'émulation peut rattraper son retard.
++	static int dupe_skip = -1;
++	if (dupe_skip < 0) dupe_skip = getenv("MINARCH_AUDIO_STABLE") != NULL;
++	if (!data && dupe_skip && lastframe) return;
+ 	if (!data) {
+ 		data = lastframe;
+ 		if (!data) return;

@@ -1,0 +1,107 @@
+diff --git a/minui-list.c b/minui-list.c
+index 4639bb1..0198389 100644
+--- a/minui-list.c
++++ b/minui-list.c
+@@ -129,6 +129,13 @@ static uint32_t theme_background_u32(SDL_Surface *dst)
+ #endif
+ }
+ 
++// LIST_SKIP_SELECTED : vrai si la ligne sous le curseur doit être sautée (titre,
++// ligne non sélectionnable). Les bornes sont vérifiées AVANT de lire visible[] :
++// sans cela, BAS sur la dernière ligne (ou HAUT sur la première) lisait hors
++// du tableau et la brique plantait (le pak semblait « quitter »).
++#define LIST_SKIP_SELECTED(ls) ((ls)->selected >= 0 && (ls)->selected < (ls)->visible_count && \
++    ((ls)->items[(ls)->visible[(ls)->selected]].features.is_header || (ls)->items[(ls)->visible[(ls)->selected]].features.unselectable))
++
+ // blit_selected_pill draws the selection pill: tinted with the theme's main color
+ // under NextUI, the plain white pill asset under MinUI.
+ static void blit_selected_pill(int asset, SDL_Surface *dst, SDL_Rect *rect)
+@@ -2087,7 +2094,7 @@ void handle_input(struct AppState *state)
+         else
+         {
+             state->list_state->selected -= 1;
+-            while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++            while (LIST_SKIP_SELECTED(state->list_state))
+             {
+                 state->list_state->selected -= 1;
+                 if (state->list_state->selected < 0)
+@@ -2099,7 +2106,7 @@ void handle_input(struct AppState *state)
+             if (state->list_state->selected < 0)
+             {
+                 state->list_state->selected = state->list_state->visible_count - 1;
+-                while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++                while (LIST_SKIP_SELECTED(state->list_state))
+                 {
+                     state->list_state->selected -= 1;
+                 }
+@@ -2110,8 +2117,10 @@ void handle_input(struct AppState *state)
+             }
+             else if (state->list_state->selected < state->list_state->first_visible)
+             {
+-                state->list_state->first_visible -= 1;
+-                state->list_state->last_visible -= 1;
++                // le curseur a pu sauter un titre : faire défiler d'autant
++                int shift = state->list_state->first_visible - state->list_state->selected;
++                state->list_state->first_visible -= shift;
++                state->list_state->last_visible -= shift;
+             }
+             state->redraw = 1;
+         }
+@@ -2125,7 +2134,7 @@ void handle_input(struct AppState *state)
+         else
+         {
+             state->list_state->selected += 1;
+-            while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++            while (LIST_SKIP_SELECTED(state->list_state))
+             {
+                 state->list_state->selected += 1;
+                 if (state->list_state->selected >= state->list_state->visible_count)
+@@ -2137,7 +2146,7 @@ void handle_input(struct AppState *state)
+             if (state->list_state->selected >= state->list_state->visible_count)
+             {
+                 state->list_state->selected = 0;
+-                while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++                while (LIST_SKIP_SELECTED(state->list_state))
+                 {
+                     state->list_state->selected += 1;
+                 }
+@@ -2147,8 +2156,10 @@ void handle_input(struct AppState *state)
+             }
+             else if (state->list_state->selected >= state->list_state->last_visible)
+             {
+-                state->list_state->first_visible += 1;
+-                state->list_state->last_visible += 1;
++                // le curseur a pu sauter un titre : faire défiler d'autant
++                int shift = state->list_state->selected - state->list_state->last_visible + 1;
++                state->list_state->first_visible += shift;
++                state->list_state->last_visible += shift;
+             }
+             state->redraw = 1;
+         }
+@@ -2175,7 +2186,7 @@ void handle_input(struct AppState *state)
+                 state->list_state->selected = 0;
+             }
+ 
+-            while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++            while (LIST_SKIP_SELECTED(state->list_state))
+             {
+                 state->list_state->selected -= 1;
+                 if (state->list_state->selected < 0)
+@@ -2187,7 +2198,7 @@ void handle_input(struct AppState *state)
+ 
+             if (state->list_state->selected == 0)
+             {
+-                while (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable)
++                while (LIST_SKIP_SELECTED(state->list_state))
+                 {
+                     state->list_state->selected += 1;
+                     if (state->list_state->selected >= state->list_state->visible_count)
+@@ -2238,7 +2249,7 @@ void handle_input(struct AppState *state)
+                 state->list_state->selected = state->list_state->visible_count - 1;
+             }
+             while (state->list_state->selected < (int)state->list_state->visible_count &&
+-                   (state->list_state->items[state->list_state->visible[state->list_state->selected]].features.is_header || state->list_state->items[state->list_state->visible[state->list_state->selected]].features.unselectable))
++                   (LIST_SKIP_SELECTED(state->list_state)))
+             {
+                 state->list_state->selected += 1;
+             }

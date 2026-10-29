@@ -1,0 +1,645 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index e107225d..c5f5f41b 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -2356,141 +2356,523 @@ SDL_Surface* GFX_createScreenFormatSurface(int width, int height)
+ 	);
+ }
+ 
+-int GFX_blitHardwareGroup(SDL_Surface *dst, int show_setting)
++// --- Save Sync : icônes d'état (batterie, réseau, VPN, Bluetooth, manette…) ---
++// Rangée de petites icônes vectorielles en haut à droite, sans pastille, au
++// même endroit dans le launcher et dans le menu en jeu, où seul un petit fond
++// sombre s'ajoute autour (lecture sur l'image du jeu). Si la rangée déborde sur
++// la première ligne, sa largeur est réservée (le texte s'arrête avant, défilement
++// compris), comme pour la pastille d'origine. Toutes les icônes ont la même hauteur et le même
++// axe ; couleur du texte de la liste (THEME_COLOR4), couleur réservée aux
++// alertes : mise à jour (bleu), Save Sync à traiter (ambre), batterie en
++// charge (vert) ou faible (rouge). Une icône = une fonction de dessin sur une
++// grille de 14 unités de haut + une ligne dans SS_ICONS (ordre de droite à
++// gauche, affichée seulement si sa condition est vraie). Lectures locales au
++// plus toutes les 5 s, aucun accès réseau ; rendu dans un calque ARGB mis en
++// cache, refait seulement quand l'état change.
++#include <ifaddrs.h>
++#include <dirent.h>
++#include <netinet/in.h>
++
++enum { SS_VPN_OFF, SS_VPN_ON, SS_VPN_FAIL };
++static int SS_vpn = SS_VPN_OFF;
++static int SS_update = 0;
++static int SS_plugged = 0;
++static int SS_syncAlert = 0;
++static int SS_pad = 0;
++static int SS_music = 0;
++
++// Manette externe : un joystick au-delà de js0 (les touches intégrées).
++static int SS_padConnected(void)
++{
++	DIR *dir = opendir("/dev/input");
++	if (!dir) return 0;
++	struct dirent *ent;
++	int pads = 0;
++	while ((ent = readdir(dir)))
++		pads += strncmp(ent->d_name, "js", 2) == 0;
++	closedir(dir);
++	return pads > 1;
++}
++
++// Chargeur branché ? (alimentation USB ou secteur « online ») — différent de
++// pwr.is_charging, qui retombe à 0 une fois la batterie pleine.
++static int SS_chargerOnline(void)
++{
++	DIR *dir = opendir("/sys/class/power_supply");
++	if (!dir) return 0;
++	struct dirent *ent;
++	int online = 0;
++	char path[300], value[16];
++	while (!online && (ent = readdir(dir)))
++	{
++		if (ent->d_name[0] == '.') continue;
++		snprintf(path, sizeof(path), "/sys/class/power_supply/%s/type", ent->d_name);
++		FILE *f = fopen(path, "r");
++		if (!f) continue;
++		int psu = fgets(value, sizeof(value), f) && (strncmp(value, "USB", 3) == 0 || strncmp(value, "Mains", 5) == 0);
++		fclose(f);
++		if (!psu) continue;
++		snprintf(path, sizeof(path), "/sys/class/power_supply/%s/online", ent->d_name);
++		if ((f = fopen(path, "r")))
++		{
++			online = fgets(value, sizeof(value), f) && value[0] == '1';
++			fclose(f);
++		}
++	}
++	closedir(dir);
++	return online;
++}
++
++static int SS_fileHas(const char *path, const char *needle, int at_line_start)
+ {
+-	int ox;
+-	int oy;
+-	int ow = 0;
++	FILE *f = fopen(path, "r");
++	if (!f) return 0;
++	char line[256];
++	int found = 0;
++	while (!found && fgets(line, sizeof(line), f))
++		found = at_line_start ? strncmp(line, needle, strlen(needle)) == 0 : strstr(line, needle) != NULL;
++	fclose(f);
++	return found;
++}
++
++static int SS_processRunning(const char *name)
++{
++	DIR *proc = opendir("/proc");
++	if (!proc) return 0;
++	struct dirent *ent;
++	int found = 0;
++	char path[64], comm[32];
++	while (!found && (ent = readdir(proc)))
++	{
++		if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
++		snprintf(path, sizeof(path), "/proc/%s/comm", ent->d_name);
++		FILE *f = fopen(path, "r");
++		if (!f) continue;
++		if (fgets(comm, sizeof(comm), f))
++		{
++			comm[strcspn(comm, "\n")] = 0;
++			found = strcmp(comm, name) == 0;
++		}
++		fclose(f);
++	}
++	closedir(proc);
++	return found;
++}
+ 
+-	if (show_setting && !GetHDMI())
++static int SS_interfaceHasIPv4(const char *name)
++{
++	struct ifaddrs *list, *it;
++	int found = 0;
++	if (getifaddrs(&list) != 0) return 0;
++	for (it = list; it && !found; it = it->ifa_next)
++		found = it->ifa_addr && it->ifa_addr->sa_family == AF_INET && strcmp(it->ifa_name, name) == 0;
++	freeifaddrs(list);
++	return found;
++}
++
++static void SS_refreshStatus(void)
++{
++	static time_t checked = 0;
++	time_t now = time(NULL);
++	if (checked && now - checked < 5 && now >= checked) return;
++	checked = now;
++
++	SS_plugged = SS_chargerOnline();
++	SS_pad = SS_padConnected();
++	SS_music = access("/tmp/music-playing", F_OK) == 0; // Tools > Music plays (its relay keeps the file)
++
++	char path[MAX_PATH];
++	snprintf(path, sizeof(path), "%s/.userdata/%s/update-check/state", SDCARD_PATH, PLATFORM);
++	SS_update = SS_fileHas(path, "baseos_update=1", 1) || SS_fileHas(path, "nextui_update=1", 1);
++
++	// Save Sync à traiter : le dernier rapport du moteur contient un échec qui
++	// demande une action (choisir une version, se reconnecter à Steam) — pas les
++	// échecs passagers (hors ligne, jeu en cours), qui se règlent seuls.
++	snprintf(path, sizeof(path), "%s/.userdata/%s/save-sync/reports/07-last-check.txt", SDCARD_PATH, PLATFORM);
++	SS_syncAlert = SS_fileHas(path, "FAIL CONFLICT_BOTH_CHANGED", 0) || SS_fileHas(path, "FAIL INITIAL_MISMATCH_MANUAL_REVIEW", 0) ||
++				   SS_fileHas(path, "FAIL FIRST_UPLOAD_MANUAL_ONLY", 0) || SS_fileHas(path, "FAIL REMOTE_DELETED_MANUAL_REVIEW", 0) ||
++				   SS_fileHas(path, "FAIL STEAM_AUTH_REQUIRED", 0);
++
++	if (SS_interfaceHasIPv4("tailscale0"))
++		SS_vpn = SS_VPN_ON;
++	else if (SS_processRunning("tailscaled"))
++		SS_vpn = SS_VPN_FAIL;
++	else
+ 	{
+-		// Use the helper function to render the indicator at the standard position
+-		ow = SCALE1(PILL_SIZE + SETTINGS_WIDTH + 10 + 4);
+-		ox = dst->w - SCALE1(PADDING) - ow;
+-		oy = SCALE1(PADDING);
+-		GFX_blitHardwareIndicator(dst, ox, oy, (IndicatorType)show_setting);
++		snprintf(path, sizeof(path), "%s/.userdata/%s/auto.sh", SDCARD_PATH, PLATFORM);
++		SS_vpn = SS_fileHas(path, "Tailscale.pak-on-boot", 0) ? SS_VPN_FAIL : SS_VPN_OFF;
+ 	}
+-	else
++}
++
++// Vrai si ce que montrent les icônes a changé : appelé chaque seconde par
++// PWR_update, qui redessine alors l'écran (le launcher ne se redessine sinon
++// qu'à la prochaine action, et un VPN qui se connecte resterait « en échec »).
++static int SS_statusChanged(void)
++{
++	static char last[64];
++	char now[64];
++	SS_refreshStatus();
++	snprintf(now, sizeof(now), "%d %d %d %d %d %d %d %d %d %d %d", SDL_AtomicGet(&pwr.charge), SDL_AtomicGet(&pwr.is_charging),
++			 SS_plugged, PLAT_connectionStrength(), SS_vpn, SS_update, SS_syncAlert, SS_pad, BT_isConnected(),
++			 GetAudioSink() != AUDIO_SINK_DEFAULT, SS_music);
++	if (strcmp(now, last) == 0) return 0;
++	strcpy(last, now);
++	return 1;
++}
++
++// Calque ARGB8888 (alpha non prémultiplié) : composition « par-dessus », ou
++// découpe (SS_cutting : l'alpha est retiré, pour évider un glyphe plein).
++static int SS_cutting = 0;
++static void SS_over(SDL_Surface *l, int x, int y, uint32_t rgba, float cov)
++{
++	if (SS_cutting)
+ 	{
+-		ConnectionStrength strength = PLAT_connectionStrength();
+-		int show_wifi = strength > SIGNAL_STRENGTH_OFF;
+-		// no need to handle in PLAT_updateNetworkStatus,
+-		// this one is async anyway
+-		int show_bt = BT_isConnected();
+-		int show_external_audio = GetAudioSink() != AUDIO_SINK_DEFAULT;
+-		bool show_clock = CFG_getShowClock();
+-		SDL_Rect battery_rect = asset_rects[ASSET_BATTERY];
++		if (cov <= 0.0f || x < 0 || y < 0 || x >= l->w || y >= l->h) return;
++		Uint32 *px = (Uint32 *)((Uint8 *)l->pixels + y * l->pitch) + x;
++		Uint32 a = (Uint32)(((*px >> 24) & 0xff) * (1.0f - (cov > 1.0f ? 1.0f : cov)) + 0.5f);
++		*px = (a << 24) | (*px & 0xffffff);
++		return;
++	}
++	int r, g, b, a;
++	rgba_unpack(rgba, &r, &g, &b, &a);
++	float sa = cov * a / 255.0f;
++	if (sa <= 0.0f || x < 0 || y < 0 || x >= l->w || y >= l->h) return;
++	if (sa > 1.0f) sa = 1.0f;
++	Uint32 *px = (Uint32 *)((Uint8 *)l->pixels + y * l->pitch) + x;
++	float da = ((*px >> 24) & 0xff) / 255.0f;
++	float oa = sa + da * (1.0f - sa);
++	float k = da * (1.0f - sa);
++	int orr = (int)((r * sa + ((*px >> 16) & 0xff) * k) / oa + 0.5f);
++	int og = (int)((g * sa + ((*px >> 8) & 0xff) * k) / oa + 0.5f);
++	int ob = (int)((b * sa + (*px & 0xff) * k) / oa + 0.5f);
++	*px = ((Uint32)(oa * 255.0f + 0.5f) << 24) | (orr << 16) | (og << 8) | ob;
++}
++
++static float SS_clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
++
++// Disque plein anticrénelé.
++static void SS_disc(SDL_Surface *l, float cx, float cy, float rad, uint32_t rgba)
++{
++	for (int y = (int)(cy - rad - 1); y <= (int)(cy + rad + 1); y++)
++		for (int x = (int)(cx - rad - 1); x <= (int)(cx + rad + 1); x++)
++			SS_over(l, x, y, rgba, SS_clamp01(rad + 0.5f - hypotf(x + 0.5f - cx, y + 0.5f - cy)));
++}
+ 
+-		if (!show_bt && !show_wifi && !show_clock)
++// Arc d'anneau de `from` à `to` (fractions du tour, 0 = midi, sens horaire).
++static void SS_arc(SDL_Surface *l, float cx, float cy, float rad, float width, float from, float to, uint32_t rgba)
++{
++	float circ = 2.0f * (float)M_PI * rad;
++	for (int y = (int)(cy - rad - width); y <= (int)(cy + rad + width); y++)
++		for (int x = (int)(cx - rad - width); x <= (int)(cx + rad + width); x++)
+ 		{
+-			ow = SCALE1(PILL_SIZE);
+-			ox = dst->w - SCALE1(PADDING) - ow;
+-			oy = SCALE1(PADDING);
++			float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
++			float cov = SS_clamp01(width / 2 + 0.5f - fabsf(hypotf(dx, dy) - rad));
++			if (cov <= 0) continue;
++			float t = atan2f(dx, -dy) / (2.0f * (float)M_PI);
++			if (t < 0) t += 1.0f;
++			if (to - from < 1.0f)
++				cov *= SS_clamp01((to - t) * circ + 0.5f) * SS_clamp01((t - from) * circ + 0.5f);
++			SS_over(l, x, y, rgba, cov);
++		}
++}
+ 
+-			GFX_blitPillColor(ASSET_WHITE_PILL, dst, &(SDL_Rect){ox, oy, ow, SCALE1(PILL_SIZE)}, THEME_COLOR2, RGB_WHITE);
++// Trait épais anticrénelé (barre « hors ligne » / « échec »).
++static void SS_line(SDL_Surface *l, float x1, float y1, float x2, float y2, float width, uint32_t rgba)
++{
++	float vx = x2 - x1, vy = y2 - y1, len2 = vx * vx + vy * vy;
++	for (int y = (int)fminf(y1, y2) - (int)width - 1; y <= (int)fmaxf(y1, y2) + (int)width + 1; y++)
++		for (int x = (int)fminf(x1, x2) - (int)width - 1; x <= (int)fmaxf(x1, x2) + (int)width + 1; x++)
++		{
++			float px = x + 0.5f - x1, py = y + 0.5f - y1;
++			float t = SS_clamp01((px * vx + py * vy) / len2);
++			float d = hypotf(px - t * vx, py - t * vy);
++			SS_over(l, x, y, rgba, SS_clamp01(width / 2 + 0.5f - d));
++		}
++}
+ 
+-			int battery_x = ox + (SCALE1(PILL_SIZE) - (battery_rect.w + FIXED_SCALE)) / 2;
+-			int battery_y = oy + (SCALE1(PILL_SIZE) - battery_rect.h) / 2;
++// Polygone plein anticrénelé (suréchantillonnage 4x4).
++static int SS_inPolygon(const float *p, int n, float x, float y)
++{
++	int in = 0;
++	for (int i = 0, j = n - 1; i < n; j = i++)
++		if ((p[2 * i + 1] > y) != (p[2 * j + 1] > y) &&
++			x < (p[2 * j] - p[2 * i]) * (y - p[2 * i + 1]) / (p[2 * j + 1] - p[2 * i + 1]) + p[2 * i])
++			in = !in;
++	return in;
++}
+ 
+-			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
++static void SS_poly(SDL_Surface *l, const float *p, int n, uint32_t rgba)
++{
++	float x0 = p[0], x1 = p[0], y0 = p[1], y1 = p[1];
++	for (int i = 1; i < n; i++)
++	{
++		x0 = fminf(x0, p[2 * i]); x1 = fmaxf(x1, p[2 * i]);
++		y0 = fminf(y0, p[2 * i + 1]); y1 = fmaxf(y1, p[2 * i + 1]);
++	}
++	for (int py = (int)y0 - 1; py <= (int)y1 + 1; py++)
++		for (int px = (int)x0 - 1; px <= (int)x1 + 1; px++)
++		{
++			int hits = 0;
++			for (int sy = 0; sy < 4; sy++)
++				for (int sx = 0; sx < 4; sx++)
++					hits += SS_inPolygon(p, n, px + (sx + 0.5f) / 4, py + (sy + 0.5f) / 4);
++			if (hits) SS_over(l, px, py, rgba, hits / 16.0f);
+ 		}
+-		else
++}
++
++// Rectangle arrondi plein (distance signée).
++static void SS_rrect(SDL_Surface *l, float x0, float y0, float x1, float y1, float rad, uint32_t rgba)
++{
++	float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hx = (x1 - x0) / 2 - rad, hy = (y1 - y0) / 2 - rad;
++	for (int y = (int)y0 - 1; y <= (int)y1 + 1; y++)
++		for (int x = (int)x0 - 1; x <= (int)x1 + 1; x++)
+ 		{
+-			ow = SCALE1(BUTTON_MARGIN);
++			float qx = fabsf(x + 0.5f - cx) - hx, qy = fabsf(y + 0.5f - cy) - hy;
++			float d = hypotf(fmaxf(qx, 0), fmaxf(qy, 0)) + fminf(fmaxf(qx, qy), 0) - rad;
++			SS_over(l, x, y, rgba, SS_clamp01(0.5f - d));
++		}
++}
+ 
+-			if (show_bt)
+-			{
+-				SDL_Rect bt_rect = asset_rects[ASSET_BLUETOOTH];
+-				ow += bt_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++static uint32_t SS_alpha(uint32_t rgba, float k) { return (rgba & 0xffffff00) | (uint32_t)((rgba & 0xff) * k); }
+ 
+-			if (show_wifi)
+-			{
+-				SDL_Rect wifi_rect = asset_rects[ASSET_WIFI];
+-				ow += wifi_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++// Crayon : glyphe sur une grille de 14 unités de haut, origine en haut à gauche.
++typedef struct { SDL_Surface *l; float x, y, k; uint32_t ink, dim; } SS_Pen;
++#define SS_X(v) (p->x + (v) * p->k)
++#define SS_Y(v) (p->y + (v) * p->k)
++#define SS_K(v) ((v) * p->k)
++#define SS_GREEN 0x4cd964ffU
++#define SS_RED 0xeb5757ffU
++#define SS_BLUE 0x5aaaffffU
++#define SS_AMBER 0xf5b83dffU
+ 
+-			if (show_external_audio)
+-			{
+-				SDL_Rect external_audio_rect = asset_rects[ASSET_AUDIO];
+-				ow += external_audio_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++static void SS_penLine(const SS_Pen *p, float x1, float y1, float x2, float y2, float w, uint32_t c)
++{
++	SS_line(p->l, SS_X(x1), SS_Y(y1), SS_X(x2), SS_Y(y2), SS_K(w), c);
++}
++static void SS_penDisc(const SS_Pen *p, float x, float y, float r, uint32_t c) { SS_disc(p->l, SS_X(x), SS_Y(y), SS_K(r), c); }
++static void SS_penRect(const SS_Pen *p, float x0, float y0, float x1, float y1, float r, uint32_t c)
++{
++	SS_rrect(p->l, SS_X(x0), SS_Y(y0), SS_X(x1), SS_Y(y1), SS_K(r), c);
++}
++// Arc de part et d'autre de midi (demi-ouverture en fraction de tour).
++static void SS_penArcTop(const SS_Pen *p, float x, float y, float r, float w, float half, uint32_t c)
++{
++	SS_arc(p->l, SS_X(x), SS_Y(y), SS_K(r), SS_K(w), 1.0f - half, 1.0f, c);
++	SS_arc(p->l, SS_X(x), SS_Y(y), SS_K(r), SS_K(w), 0.0f, half, c);
++}
++// Barre « hors service » : trou puis trait, en travers du glyphe.
++static void SS_penSlash(const SS_Pen *p, float x1, float y1, float x2, float y2)
++{
++	SS_cutting = 1; SS_penLine(p, x1, y1, x2, y2, 3.6f, 0); SS_cutting = 0;
++	SS_penLine(p, x1, y1, x2, y2, 1.6f, p->ink);
++}
+ 
+-			ow += battery_rect.w + SCALE1(BUTTON_MARGIN);
++static void SS_drawBattery(const SS_Pen *p)
++{
++	int charge = SDL_AtomicGet(&pwr.charge), charging = SS_plugged || SDL_AtomicGet(&pwr.is_charging);
++	uint32_t fill = charging ? SS_GREEN : charge < 20 ? SS_RED : p->ink;
++	SS_penRect(p, 0.4f, 2.2f, 21.6f, 11.8f, 2.4f, p->dim);
++	SS_penRect(p, 0.4f, 2.2f, 0.4f + fmaxf(4.8f, 21.2f * SS_clamp01(charge / 100.0f)), 11.8f, 2.4f, fill);
++}
+ 
+-			SDL_Surface *clock = NULL;
+-			if (show_clock)
+-			{
+-				int clock_width = 0;
+-				char timeString[12];
+-				time_t t = time(NULL);
+-				struct tm tm = *localtime(&t);
+-				if (CFG_getClock24H())
+-					strftime(timeString, 12, "%R", &tm);
+-				else
+-					strftime(timeString, 12, "%-I:%M %p", &tm);
+-				char display_name[12];
+-				clock_width = GFX_getTextWidth(font.small, timeString, display_name, SCALE1(PILL_SIZE), 0);
+-				clock = TTF_RenderUTF8_Blended(font.small, display_name, uintToColour(THEME_COLOR6_255));
+-				ow += clock_width + SCALE1(BUTTON_MARGIN);
+-			}
++static void SS_drawWifi(const SS_Pen *p)
++{
++	ConnectionStrength s = PLAT_connectionStrength();
++	int online = s > SIGNAL_STRENGTH_DISCONNECTED;
++	int bars = !online ? 0 : s == SIGNAL_STRENGTH_HIGH ? 3 : s == SIGNAL_STRENGTH_MED ? 2 : 1;
++	const float radii[3] = {4.0f, 7.6f, 11.2f};
++	for (int i = 0; i < 3; i++)
++		SS_penArcTop(p, 8, 12.6f, radii[i], 1.9f, 0.125f, i < bars ? p->ink : p->dim);
++	SS_penDisc(p, 8, 12.6f, 1.4f, online ? p->ink : p->dim);
++	if (!online) SS_penSlash(p, 2, 1, 14, 13.5f);
++}
+ 
+-			ox = dst->w - SCALE1(PADDING) - ow;
+-			oy = SCALE1(PADDING);
+-			GFX_blitPillColor(ASSET_WHITE_PILL, dst, &(SDL_Rect){ox, oy, ow, SCALE1(PILL_SIZE)}, THEME_COLOR2, RGB_WHITE);
++static void SS_drawVpn(const SS_Pen *p)
++{
++	uint32_t c = SS_vpn == SS_VPN_FAIL ? p->dim : p->ink;
++	SS_penArcTop(p, 5.5f, 4.4f, 3.3f, 1.7f, 0.25f, c);
++	SS_penLine(p, 2.2f, 4.4f, 2.2f, 6.6f, 1.7f, c);
++	SS_penLine(p, 8.8f, 4.4f, 8.8f, 6.6f, 1.7f, c);
++	SS_penRect(p, 0.6f, 6.0f, 10.4f, 14.0f, 1.6f, c);
++	SS_cutting = 1; SS_penDisc(p, 5.5f, 9.8f, 1.0f, 0); SS_cutting = 0;
++	if (SS_vpn == SS_VPN_FAIL) SS_penSlash(p, 0.2f, 1.0f, 10.8f, 13.6f);
++}
+ 
+-			ox += SCALE1(BUTTON_MARGIN);
++static void SS_drawBluetooth(const SS_Pen *p)
++{
++	SS_penLine(p, 4.5f, 0.8f, 4.5f, 13.2f, 1.6f, p->ink);
++	SS_penLine(p, 4.5f, 0.8f, 8.0f, 4.0f, 1.6f, p->ink);
++	SS_penLine(p, 8.0f, 4.0f, 1.0f, 10.0f, 1.6f, p->ink);
++	SS_penLine(p, 4.5f, 13.2f, 8.0f, 10.0f, 1.6f, p->ink);
++	SS_penLine(p, 8.0f, 10.0f, 1.0f, 4.0f, 1.6f, p->ink);
++}
+ 
+-			if (show_bt)
+-			{
+-				int asset = ASSET_BLUETOOTH;
+-				SDL_Rect bt_rect = asset_rects[asset];
+-				int x = ox;
+-				int y = oy + (SCALE1(PILL_SIZE) - bt_rect.h) / 2;
++static void SS_drawPad(const SS_Pen *p)
++{
++	SS_penRect(p, 0.5f, 2.5f, 18.5f, 10.0f, 3.6f, p->ink);
++	SS_penDisc(p, 4.2f, 9.8f, 3.4f, p->ink);
++	SS_penDisc(p, 14.8f, 9.8f, 3.4f, p->ink);
++	SS_cutting = 1;
++	SS_penRect(p, 3.0f, 6.0f, 7.4f, 7.3f, 0.3f, 0);
++	SS_penRect(p, 4.55f, 4.4f, 5.85f, 8.9f, 0.3f, 0);
++	SS_penDisc(p, 13.1f, 5.3f, 0.85f, 0);
++	SS_penDisc(p, 15.2f, 7.5f, 0.85f, 0);
++	SS_cutting = 0;
++}
+ 
+-				GFX_blitAssetColor(asset, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
+-				ox += bt_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++static void SS_drawAudio(const SS_Pen *p)
++{
++	const float body[12] = {SS_X(0.5f), SS_Y(4.5f), SS_X(3.5f), SS_Y(4.5f), SS_X(7.5f), SS_Y(1.0f),
++							SS_X(7.5f), SS_Y(13.0f), SS_X(3.5f), SS_Y(9.5f), SS_X(0.5f), SS_Y(9.5f)};
++	SS_poly(p->l, body, 6, p->ink);
++	SS_arc(p->l, SS_X(7.5f), SS_Y(7.0f), SS_K(4.2f), SS_K(1.5f), 0.15f, 0.35f, p->ink);
++}
+ 
+-			if (show_wifi)
+-			{
+-				int asset =
+-					strength == SIGNAL_STRENGTH_HIGH ? ASSET_WIFI : strength == SIGNAL_STRENGTH_MED ? ASSET_WIFI_MED
+-																: strength == SIGNAL_STRENGTH_LOW	? ASSET_WIFI_LOW
+-																									: ASSET_WIFI_OFF; // this should use ASSET_WIFI and be greyed out
+-				SDL_Rect wifi_rect = asset_rects[asset];
+-				int x = ox;
+-				int y = oy + (SCALE1(PILL_SIZE) - wifi_rect.h) / 2;
+-
+-				GFX_blitAssetColor(asset, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
+-				ox += wifi_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++static void SS_drawUpdate(const SS_Pen *p)
++{
++	SS_penDisc(p, 7, 7, 7, SS_BLUE);
++	SS_cutting = 1;
++	SS_penLine(p, 7.0f, 3.6f, 7.0f, 10.0f, 1.7f, 0);
++	SS_penLine(p, 4.2f, 7.4f, 7.0f, 10.2f, 1.7f, 0);
++	SS_penLine(p, 7.0f, 10.2f, 9.8f, 7.4f, 1.7f, 0);
++	SS_cutting = 0;
++}
+ 
+-			if (show_external_audio)
+-			{
+-				int asset = ASSET_AUDIO;
+-				SDL_Rect external_audio_rect = asset_rects[asset];
+-				int x = ox;
+-				int y = oy + (SCALE1(PILL_SIZE) - external_audio_rect.h) / 2;
++static void SS_drawAlert(const SS_Pen *p)
++{
++	const float tri[6] = {SS_X(7.5f), SS_Y(0.3f), SS_X(15.0f), SS_Y(13.7f), SS_X(0.0f), SS_Y(13.7f)};
++	SS_poly(p->l, tri, 3, SS_AMBER);
++	SS_cutting = 1;
++	SS_penLine(p, 7.5f, 4.8f, 7.5f, 9.0f, 1.7f, 0);
++	SS_penDisc(p, 7.5f, 11.2f, 0.95f, 0);
++	SS_cutting = 0;
++}
+ 
+-				GFX_blitAssetColor(asset, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
+-				ox += external_audio_rect.w + SCALE1(BUTTON_MARGIN);
+-			}
++// Note de musique (deux croches liées), même graisse : Tools > Music joue.
++// Même dessin que drawMusic dans paks/music/player/statusicons.go.
++static void SS_drawMusic(const SS_Pen *p)
++{
++	SS_penDisc(p, 3.0f, 11.0f, 2.6f, p->ink);
++	SS_penDisc(p, 11.0f, 9.6f, 2.6f, p->ink);
++	SS_penLine(p, 5.0f, 11.0f, 5.0f, 2.6f, 1.6f, p->ink);
++	SS_penLine(p, 13.0f, 9.6f, 13.0f, 1.2f, 1.6f, p->ink);
++	const float beam[8] = {SS_X(4.2f), SS_Y(1.9f), SS_X(13.8f), SS_Y(0.4f), SS_X(13.8f), SS_Y(3.6f), SS_X(4.2f), SS_Y(5.1f)};
++	SS_poly(p->l, beam, 4, p->ink);
++}
++
++static int SS_always(void) { return 1; }
++static int SS_musicShown(void) { return SS_music; }
++static int SS_vpnShown(void) { return SS_vpn != SS_VPN_OFF; }
++static int SS_btShown(void) { return BT_isConnected(); }
++static int SS_padShown(void) { return SS_pad; }
++static int SS_audioShown(void) { return GetAudioSink() != AUDIO_SINK_DEFAULT && GetAudioSink() != AUDIO_SINK_BLUETOOTH; }
++static int SS_updateShown(void) { return SS_update; }
++static int SS_alertShown(void) { return SS_syncAlert; }
+ 
+-			int battery_x = ox;
+-			int battery_y = oy + (SCALE1(PILL_SIZE) - battery_rect.h) / 2;
++// Icônes, de droite à gauche : largeur (unités), condition d'affichage, dessin.
++static const struct { float w; int (*shown)(void); void (*draw)(const SS_Pen *); } SS_ICONS[] = {
++	{22, SS_always, SS_drawBattery},
++	{16, SS_always, SS_drawWifi},
++	{11, SS_vpnShown, SS_drawVpn},
++	{9, SS_btShown, SS_drawBluetooth},
++	{19, SS_padShown, SS_drawPad},
++	{13, SS_audioShown, SS_drawAudio},
++	{14, SS_updateShown, SS_drawUpdate},
++	{15, SS_alertShown, SS_drawAlert},
++	{14, SS_musicShown, SS_drawMusic},
++};
++#define SS_ICON_COUNT ((int)(sizeof(SS_ICONS) / sizeof(SS_ICONS[0])))
++#define SS_GLYPH SCALE1(7)					   // hauteur commune des icônes
++#define SS_GAP (SS_GLYPH * 9 / 14)			   // espace entre deux icônes
++
++// Rangée d'icônes (et horloge si activée) rendue dans un calque mis en cache,
++// refait si l'état change. Le calque garde toujours la marge intérieure du fond
++// (SS_PAD_X, SS_PAD_Y) : les icônes sont ainsi au même endroit avec ou sans
++// fond. backed : petit fond sombre arrondi (menu en jeu, sur l'image du jeu).
++// Le fond est à SS_EDGE du bord haut et du bord droit (même espace).
++#define SS_PAD_X SCALE1(5)
++#define SS_PAD_Y SCALE1(3)
++#define SS_EDGE SCALE1(2)
++static SDL_Surface *SS_iconRow(int backed)
++{
++	static SDL_Surface *cache = NULL;
++	static char key[160];
++	char now[160], clockText[12] = "";
++	int shown[SS_ICON_COUNT], n = 0;
++	if (CFG_getShowClock())
++	{
++		time_t t = time(NULL);
++		struct tm tm = *localtime(&t);
++		strftime(clockText, sizeof(clockText), CFG_getClock24H() ? "%R" : "%-I:%M %p", &tm);
++	}
++	char *k = now;
++	k += sprintf(k, "%d %d %d %d %x %d %s ", SDL_AtomicGet(&pwr.charge), SS_plugged || SDL_AtomicGet(&pwr.is_charging),
++				 PLAT_connectionStrength(), SS_vpn, THEME_COLOR4_255, backed, clockText);
++	float units = 0;
++	for (int i = 0; i < SS_ICON_COUNT; i++)
++	{
++		shown[i] = SS_ICONS[i].shown();
++		k += sprintf(k, "%d", shown[i]);
++		if (shown[i]) { units += SS_ICONS[i].w; n++; }
++	}
++	if (cache && strcmp(now, key) == 0) return cache;
++	if (cache) SDL_FreeSurface(cache);
++	strcpy(key, now);
++
++	SDL_Surface *clock = clockText[0] ? TTF_RenderUTF8_Blended(font.tiny, clockText, uintToColour(THEME_COLOR4_255)) : NULL;
++	float kpx = SS_GLYPH / 14.0f;
++	int w = (int)ceilf(units * kpx) + (n - 1) * SS_GAP + 2 * SS_PAD_X + (clock ? SS_GAP + clock->w : 0);
++	int h = SS_GLYPH + 2 * SS_PAD_Y;
++	cache = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
++	if (!cache) { if (clock) SDL_FreeSurface(clock); return NULL; }
++	SDL_FillRect(cache, NULL, 0);
++	SDL_SetSurfaceBlendMode(cache, SDL_BLENDMODE_BLEND);
++	if (backed) SS_rrect(cache, 0, 0, w, h, h / 2.0f, 0x0000008cU);
++	SS_Pen pen = {cache, (float)(w - SS_PAD_X), (float)SS_PAD_Y, kpx, THEME_COLOR4_255, SS_alpha(THEME_COLOR4_255, 0.3f)};
++	for (int i = 0; i < SS_ICON_COUNT; i++)
++	{
++		if (!shown[i]) continue;
++		pen.x -= SS_ICONS[i].w * kpx;
++		SS_ICONS[i].draw(&pen);
++		pen.x -= SS_GAP;
++	}
++	if (clock) // horloge : à gauche des icônes, même axe
++	{
++		SDL_BlitSurface(clock, NULL, cache, &(SDL_Rect){SS_PAD_X, (h - clock->h) / 2});
++		SDL_FreeSurface(clock);
++	}
++	return cache;
++}
+ 
+-			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
+-			ox += battery_rect.w + SCALE1(BUTTON_MARGIN);
++int GFX_blitHardwareGroup(SDL_Surface *dst, int show_setting)
++{
++	int ox;
++	int oy;
++	int ow = 0;
+ 
+-			if (show_clock && clock)
+-			{
+-				int x = ox;
+-				int y = oy + (SCALE1(PILL_SIZE) - clock->h) / 2;
+-				SDL_BlitSurface(clock, NULL, dst, &(SDL_Rect){x, y});
+-				SDL_FreeSurface(clock);
+-			}
+-		}
++	if (show_setting && !GetHDMI())
++	{
++		// Use the helper function to render the indicator at the standard position
++		ow = SCALE1(PILL_SIZE + SETTINGS_WIDTH + 10 + 4);
++		ox = dst->w - SCALE1(PADDING) - ow;
++		oy = SCALE1(PADDING);
++		GFX_blitHardwareIndicator(dst, ox, oy, (IndicatorType)show_setting);
++	}
++	else
++	{
++		SS_refreshStatus();
++		int backed = gfx.mode == MODE_MENU; // menu en jeu : l'image du jeu est derrière
++		SDL_Surface *row = SS_iconRow(backed);
++		if (!row) return 0;
++		// Même position partout ; en jeu seul le fond s'ajoute autour des icônes.
++		ox = dst->w - SS_EDGE - row->w;
++		oy = SS_EDGE;
++		SDL_BlitSurface(row, NULL, dst, &(SDL_Rect){ox, oy});
++		// Ce qui est dessiné (fond, ou icônes seules) déborde-t-il sur la première
++		// ligne (sous SCALE1(PADDING)) ? Alors sa largeur lui est réservée : le
++		// texte s'arrête avant, défilement compris.
++		int bottom = backed ? oy + row->h : oy + SS_PAD_Y + SS_GLYPH;
++		ow = bottom > SCALE1(PADDING) ? row->w + SS_EDGE : 0;
+ 	}
+ 
+ 	return ow;
+@@ -4165,6 +4547,8 @@ void PWR_update(int *_dirty, int *_show_setting, PWR_callback_t before_sleep, PW
+ 			was_charging = is_charging;
+ 			dirty = 1;
+ 		}
++		if (SS_statusChanged()) // cadran d'état : VPN, mise à jour, charge, Wi-Fi
++			dirty = 1;
+ 		checked_charge_at = now;
+ 	}
+ 

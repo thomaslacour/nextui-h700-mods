@@ -1,0 +1,242 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index 9f1f1c18..efc3a685 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -3742,6 +3742,8 @@ PAD_Context pad;
+ PAD_Context pad2;
+ FALLBACK_IMPLEMENTATION void PLAT_setPlayersMode(int mode) {}
+ FALLBACK_IMPLEMENTATION void PLAT_setPlayersActive(int active) {}
++FALLBACK_IMPLEMENTATION void PLAT_setPadButtons(int original) {}
++FALLBACK_IMPLEMENTATION int PLAT_padButtonsApply(void) { return 0; }
+ 
+ #define AXIS_DEADZONE 0x4000
+ void PAD_setAnalog(int neg_id, int pos_id, int value, int repeat_at)
+diff --git a/workspace/all/common/api.h b/workspace/all/common/api.h
+index 3c6eb063..7ff7c1f8 100644
+--- a/workspace/all/common/api.h
++++ b/workspace/all/common/api.h
+@@ -665,6 +665,8 @@ void PLAT_quitInput(void);
+ void PLAT_pollInput(void);
+ void PLAT_setPlayersMode(int mode); // 2-player mode: 0 off, 1 console P1 + external pad P2, 2 external pad P1 + console P2
+ void PLAT_setPlayersActive(int active); // 0 while a menu is open: every pad drives it
++void PLAT_setPadButtons(int original); // external pad face buttons: 0 Xbox style, 1 like the console
++int PLAT_padButtonsApply(void); // 1 when that choice matters for the running game
+ int PLAT_shouldWake(void);
+ 
+ SDL_Surface* PLAT_initVideo(void);
+diff --git a/workspace/all/minarch/ma_config.c b/workspace/all/minarch/ma_config.c
+index d60d792d..90f616de 100644
+--- a/workspace/all/minarch/ma_config.c
++++ b/workspace/all/minarch/ma_config.c
+@@ -426,6 +426,10 @@ static void Config_readOptionsString(char* cfg) {
+ 		players_mode = strtol(value, NULL, 0);
+ 		if (players_mode < 0 || players_mode > 2) players_mode = 0;
+ 	}
++	if (Config_getValue(cfg,"minarch_pad_buttons",value,NULL)) {
++		pad_buttons = strtol(value, NULL, 0) == 1;
++		PLAT_setPadButtons(pad_buttons);
++	}
+ 	if (has_custom_controllers && Config_getValue(cfg,"minarch_gamepad_type",value,NULL)) {
+ 		gamepad_type = strtol(value, NULL, 0);
+ 		int device = strtol(gamepad_values[gamepad_type], NULL, 0);
+@@ -644,6 +648,7 @@ void Config_write(int override) {
+ 	
+ 	if (has_custom_controllers) fprintf(file, "%s = %i\n", "minarch_gamepad_type", gamepad_type);
+ 	fprintf(file, "%s = %i\n", "minarch_players_mode", players_mode);
++	fprintf(file, "%s = %i\n", "minarch_pad_buttons", pad_buttons);
+ 	
+ 	for (int i=0; config.controls[i].name; i++) {
+ 		ButtonMapping* mapping = &config.controls[i];
+@@ -698,6 +703,8 @@ void Config_restore(void) {
+ 	}
+ 	players_mode = 0;
+ 	Input_applyPlayers();
++	pad_buttons = 0;
++	PLAT_setPadButtons(0);
+ 
+ 	for (int i=0; config.controls[i].name; i++) {
+ 		ButtonMapping* mapping = &config.controls[i];
+@@ -1310,6 +1317,13 @@ char* players_labels[] = {
+ 	"Pad P1",
+ 	NULL,
+ };
++// External pad face buttons in Nintendo games: Xbox style (bottom = A) or like
++// the console (bottom = B, the original layout).
++char* pad_buttons_labels[] = {
++	"Xbox",
++	"Original",
++	NULL,
++};
+ 
+ // CONFIG_NONE, CONFIG_CONSOLE, CONFIG_GAME defined in minarch_internal.h
+ 
+diff --git a/workspace/all/minarch/ma_frontend_opts.c b/workspace/all/minarch/ma_frontend_opts.c
+index 3550ec14..3e95f1d1 100644
+--- a/workspace/all/minarch/ma_frontend_opts.c
++++ b/workspace/all/minarch/ma_frontend_opts.c
+@@ -277,6 +277,11 @@ static int OptionControls_optionChanged(MenuList* list, int i) {
+ 		Input_applyPlayers();
+ 		return MENU_CALLBACK_NOP;
+ 	}
++	if (item->values==pad_buttons_labels) {
++		pad_buttons = item->value;
++		PLAT_setPadButtons(pad_buttons);
++		return MENU_CALLBACK_NOP;
++	}
+ 	if (item->values!=gamepad_labels) return MENU_CALLBACK_NOP;
+ 
+ 	if (has_custom_controllers) {
+@@ -303,7 +308,7 @@ int OptionControls_openMenu(MenuList* list, int i) {
+ 	if (OptionControls_menu.items==NULL) {
+ 
+ 		// TODO: where do I free this?
+-		OptionControls_menu.items = calloc(RETRO_BUTTON_COUNT+2+has_custom_controllers, sizeof(MenuItem));
++		OptionControls_menu.items = calloc(RETRO_BUTTON_COUNT+3+has_custom_controllers, sizeof(MenuItem));
+ 		int k = 0;
+ 
+ 		{
+@@ -315,6 +320,15 @@ int OptionControls_openMenu(MenuList* list, int i) {
+ 			item->on_change = OptionControls_optionChanged;
+ 		}
+ 
++		if (PLAT_padButtonsApply()) { // only where it changes something
++			MenuItem* item = &OptionControls_menu.items[k++];
++			item->name = "Pad buttons";
++			item->desc = "Bluetooth pad. Xbox: bottom button = A.\nOriginal: same as the console.";
++			item->value = pad_buttons;
++			item->values = pad_buttons_labels;
++			item->on_change = OptionControls_optionChanged;
++		}
++
+ 		if (has_custom_controllers) {
+ 			MenuItem* item = &OptionControls_menu.items[k++];
+ 			item->name = "Controller type";
+@@ -343,6 +357,8 @@ int OptionControls_openMenu(MenuList* list, int i) {
+ 		// update values
+ 		int k = 0;
+ 		OptionControls_menu.items[k++].value = players_mode;
++		if (PLAT_padButtonsApply())
++			OptionControls_menu.items[k++].value = pad_buttons;
+ 
+ 		if (has_custom_controllers) {
+ 			MenuItem* item = &OptionControls_menu.items[k++];
+diff --git a/workspace/all/minarch/ma_internal.h b/workspace/all/minarch/ma_internal.h
+index bc8892d2..ee0a34c6 100644
+--- a/workspace/all/minarch/ma_internal.h
++++ b/workspace/all/minarch/ma_internal.h
+@@ -199,6 +199,7 @@ extern ButtonMapping default_button_mapping[];
+ extern ButtonMapping core_button_mapping[];
+ extern int gamepad_type;
+ extern int players_mode;
++extern int pad_buttons;
+ void Input_applyPlayers(void);
+ extern int last_rewind_pressed;
+ 
+@@ -273,6 +274,7 @@ extern char* button_labels[];
+ extern char* gamepad_labels[];
+ extern char* gamepad_values[];
+ extern char* players_labels[];
++extern char* pad_buttons_labels[];
+ extern char* onoff_labels[];
+ extern char* sync_ref_labels[];
+ extern int has_custom_controllers;
+diff --git a/workspace/all/minarch/minarch.c b/workspace/all/minarch/minarch.c
+index 0c050d1f..c32916ab 100644
+--- a/workspace/all/minarch/minarch.c
++++ b/workspace/all/minarch/minarch.c
+@@ -65,6 +65,7 @@ int overclock = 0; // auto
+ int has_custom_controllers = 0;
+ int gamepad_type = 0; // index in gamepad_labels/gamepad_values
+ int players_mode = 0; // 2-player mode, index in players_labels: 0 off, 1 console P1, 2 pad P1
++int pad_buttons = 0; // external pad face buttons, index in pad_buttons_labels: 0 Xbox, 1 Original
+ 
+ // these are no longer constants as of the RG CubeXX (even though they look like it)
+ int DEVICE_WIDTH = 0;
+diff --git a/workspace/h700/platform/platform.c b/workspace/h700/platform/platform.c
+index 0f1bfa83..994ea1ec 100644
+--- a/workspace/h700/platform/platform.c
++++ b/workspace/h700/platform/platform.c
+@@ -359,6 +359,13 @@ void PLAT_setPlayersActive(int active) {
+ 		return;
+ 	players_active = !!active;
+ 	players_recentre();
++	// The external pad's face-button layout follows the menu / game switch
++	// (see controller_positional): release them so none stays held across it.
++	uint32_t tick = SDL_GetTicks();
++	apply_button_state(BTN_A, BTN_ID_A, 0, tick);
++	apply_button_state(BTN_B, BTN_ID_B, 0, tick);
++	apply_button_state(BTN_X, BTN_ID_X, 0, tick);
++	apply_button_state(BTN_Y, BTN_ID_Y, 0, tick);
+ }
+ // Where external / built-in presses and sticks go right now.
+ static int ext_to_p2(void) { return players_active && players_mode == 1; }
+@@ -421,11 +428,65 @@ static void close_controller(int slot) {
+ }
+ 
+ extern char *program_invocation_short_name; // glibc
++// External pad face buttons: Xbox style (SDL's own layout: bottom = A) in the
++// launcher, the paks, minarch's menu and Nintendo games; by position like the
++// built-in pad (bottom = B) while other systems' games run, which already gives
++// the PlayStation layout (Cross at the bottom), and in Nintendo games when
++// minarch Controls > "Pad buttons" is Original. The system is the "(TAG)" of
++// the ROM folder, minarch's 2nd argument.
++static int rom_is_nintendo(void) {
++	static const char *tags[] = {"FC", "FDS", "SFC", "SUPA", "GB", "GBC", "SGB", "GBA",
++		"MGBA", "NDS", "MELONDS", "VB", "N64", "PKM", "POKE", NULL};
++	char cmd[2048] = {0};
++	FILE *f = fopen("/proc/self/cmdline", "r");
++	if (!f)
++		return 0;
++	size_t n = fread(cmd, 1, sizeof(cmd) - 1, f);
++	fclose(f);
++	const char *arg = cmd, *end = cmd + n;
++	for (int i = 0; i < 2 && arg < end; i++) // skip argv[0] and the core
++		arg += strlen(arg) + 1;
++	if (arg >= end)
++		return 0;
++	const char *slash = strrchr(arg, '/');
++	const char *close = NULL;
++	for (const char *c = arg; c < (slash ? slash : end); c++)
++		if (*c == ')')
++			close = c;
++	if (!close)
++		return 0;
++	const char *open = close;
++	while (open > arg && *open != '(')
++		open--;
++	if (*open != '(')
++		return 0;
++	char tag[16] = {0};
++	size_t len = close - open - 1;
++	if (len == 0 || len >= sizeof(tag))
++		return 0;
++	memcpy(tag, open + 1, len);
++	for (int i = 0; tags[i]; i++)
++		if (strcmp(tag, tags[i]) == 0)
++			return 1;
++	return 0;
++}
++static int nintendo_rom = -1;
++static int pad_original = 0; // minarch Controls > "Pad buttons": Original
++void PLAT_setPadButtons(int original) {
++	pad_original = !!original;
++}
++int PLAT_padButtonsApply(void) {
++	if (nintendo_rom < 0)
++		nintendo_rom = rom_is_nintendo();
++	return nintendo_rom;
++}
+ static int controller_positional(void) {
+-	static int positional = -1;
+-	if (positional < 0)
+-		positional = strcmp(program_invocation_short_name, "minarch.elf") == 0;
+-	return positional;
++	static int in_minarch = -1;
++	if (in_minarch < 0)
++		in_minarch = strcmp(program_invocation_short_name, "minarch.elf") == 0;
++	// minarch's menu (players_active 0) uses the Xbox style like the launcher:
++	// the bottom button confirms there whatever the game layout.
++	return in_minarch && players_active && (!PLAT_padButtonsApply() || pad_original);
+ }
+ 
+ static int button_from_controller(int b, int *id) {

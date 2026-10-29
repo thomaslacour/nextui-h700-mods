@@ -1,0 +1,17 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index e107225d..af977714 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -1115,6 +1115,12 @@ int GFX_wrapText(TTF_Font *font, char *str, int max_width, int max_lines)
+ 		i += 1;
+ 	}
+ 
++	// Save Sync : le reste du texte (au-delà de max_lines) peut dépasser le
++	// tampon local de GFX_truncateText (strcpy dans buffer[MAX_PATH]) — les
++	// descriptions d'options de melonDS DS font plus de 512 caractères et le
++	// débordement écrasait la pile de minarch (OptionList_v2_init). La fin est
++	// de toute façon remplacée par « ... ».
++	if (strlen(line) >= MAX_PATH - 4) line[MAX_PATH - 4] = '\0';
+ 	line_width = GFX_truncateText(font, line, buffer, max_width, 0);
+ 	strcpy(line, buffer);
+ 

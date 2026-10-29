@@ -1,0 +1,17 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index 54a7712c..fd35d4ed 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -42,8 +42,10 @@ void LOG_note(int level, const char *fmt, ...)
+ 		break;
+ #endif
+ 	case LOG_INFO:
+-		printf("[INFO] %s", buf);
+-		fflush(stdout);
++		// Briques (minui-list, minui-presenter) : leur sortie standard porte le
++		// résultat lu par les paks (`$(minui-list …)`) ; les journaux vont sur stderr.
++		fprintf(stderr, "[INFO] %s", buf);
++		fflush(stderr);
+ 		break;
+ 	case LOG_WARN:
+ 		fprintf(stderr, "[WARN] %s", buf);

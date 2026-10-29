@@ -1,0 +1,38 @@
+diff --git a/workspace/all/minarch/ma_input.c b/workspace/all/minarch/ma_input.c
+index 3233b214..4f00c6bc 100644
+--- a/workspace/all/minarch/ma_input.c
++++ b/workspace/all/minarch/ma_input.c
+@@ -2,6 +2,7 @@
+ #include "ma_input.h"
+ 
+ #include <string.h>
++#include <stdlib.h>
+ 
+ int setFastForward(int enable) {
+ 	int val = enable ? 1 : 0;
+@@ -216,6 +217,25 @@ void input_poll_callback(void) {
+ 		//  && !PWR_ignoreSettingInput(btn, show_setting)
+ 	}
+ 
++	// Save Sync : tactile à la croix, pour les cœurs DS sur une console sans
++	// écran tactile ni stick (pak MELONDS : MINARCH_DPAD_TOUCH=1). L2 maintenu :
++	// la croix devient le stick droit (curseur « joystick » de melonDS DS) et A
++	// l'appui sur l'écran (R2 libretro) ; relâché, tout redevient normal.
++	static int dpad_touch = -1;
++	if (dpad_touch < 0) dpad_touch = getenv("MINARCH_DPAD_TOUCH") != NULL;
++	if (dpad_touch) {
++		pad.raxis.x = pad.raxis.y = 0; // pas de stick droit sur la console
++		if (PAD_isPressed(BTN_L2)) {
++			if (PAD_isPressed(BTN_LEFT))  pad.raxis.x = -32767;
++			if (PAD_isPressed(BTN_RIGHT)) pad.raxis.x =  32767;
++			if (PAD_isPressed(BTN_UP))    pad.raxis.y = -32767;
++			if (PAD_isPressed(BTN_DOWN))  pad.raxis.y =  32767;
++			buttons &= ~((1 << RETRO_DEVICE_ID_JOYPAD_UP) | (1 << RETRO_DEVICE_ID_JOYPAD_DOWN) |
++			             (1 << RETRO_DEVICE_ID_JOYPAD_LEFT) | (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT) |
++			             (1 << RETRO_DEVICE_ID_JOYPAD_A));
++			if (PAD_isPressed(BTN_A)) buttons |= 1 << RETRO_DEVICE_ID_JOYPAD_R2;
++		}
++	}
+ }
+ int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned id) {
+ 	if (port==0 && device==RETRO_DEVICE_JOYPAD && index==0) {

@@ -1,0 +1,794 @@
+diff --git a/workspace/all/nextui/nextui.c b/workspace/all/nextui/nextui.c
+index 0306ad3..78f1fe1 100644
+--- a/workspace/all/nextui/nextui.c
++++ b/workspace/all/nextui/nextui.c
+@@ -1010,6 +1010,8 @@ static void addEntries(Array* entries, char* path) {
+ 		tmp = full_path + strlen(full_path);
+ 		while((dp = readdir(dh)) != NULL) {
+ 			if (hide(dp->d_name)) continue;
++			// Tailscale is driven from Settings > VPN (same build), keep the pak out of Tools
++			if (exactMatch("Tailscale.pak", dp->d_name) && exactMatch(TOOLS_PATH, path)) continue;
+ 			strcpy(tmp, dp->d_name);
+ 			int is_dir = dp->d_type==DT_DIR;
+ 			int type;
+diff --git a/workspace/all/settings/makefile b/workspace/all/settings/makefile
+index 4c3f3c8..f77198a 100644
+--- a/workspace/all/settings/makefile
++++ b/workspace/all/settings/makefile
+@@ -22,7 +22,7 @@ SDL?=SDL
+ TARGET = settings
+ INCDIR = -I. -I../common/ -I../../$(PLATFORM)/platform/
+ SOURCE = -c ../common/utils.c ../common/api.c ../common/config.c ../common/palette.c ../common/scaler.c ../common/http.c ../common/ra_auth.c ../common/ra_offline.c ../common/ra_sync.c ../common/ra_event_queue.c ../../$(PLATFORM)/platform/platform.c
+-CXXSOURCE = $(TARGET).cpp menu.cpp colorpickermenu.cpp palettemenu.cpp fnbuttonmenu.cpp wifimenu.cpp btmenu.cpp keyboardprompt.cpp
++CXXSOURCE = $(TARGET).cpp menu.cpp colorpickermenu.cpp palettemenu.cpp fnbuttonmenu.cpp wifimenu.cpp vpnmenu.cpp btmenu.cpp keyboardprompt.cpp
+ CXXSOURCE += build/$(PLATFORM)/utils.o build/$(PLATFORM)/api.o build/$(PLATFORM)/config.o build/$(PLATFORM)/palette.o build/$(PLATFORM)/scaler.o build/$(PLATFORM)/http.o build/$(PLATFORM)/ra_auth.o build/$(PLATFORM)/ra_offline.o build/$(PLATFORM)/ra_sync.o build/$(PLATFORM)/ra_event_queue.o build/$(PLATFORM)/platform.o
+ 
+ CC = $(CROSS_COMPILE)gcc
+diff --git a/workspace/all/settings/settings.cpp b/workspace/all/settings/settings.cpp
+index f9f7404..4a17436 100644
+--- a/workspace/all/settings/settings.cpp
++++ b/workspace/all/settings/settings.cpp
+@@ -23,6 +23,7 @@ extern "C"
+ #include <algorithm>
+ #include "wifimenu.hpp"
+ #include "btmenu.hpp"
++#include "vpnmenu.hpp"
+ #include "keyboardprompt.hpp"
+ #include "colorpickermenu.hpp"
+ #include "palettemenu.hpp"
+@@ -1155,6 +1156,10 @@ int main(int argc, char *argv[])
+         if(deviceInfo.hasWifi())
+             mainItems.push_back(new MenuItem{ListItemType::Generic, "Network", "", {}, {}, nullptr, nullptr, DeferToSubmenu, new Wifi::Menu(appQuit, ctx.dirty)});
+ 
++        // Tailscale, when its pak is installed (visible or hidden in Tools)
++        if(deviceInfo.hasWifi() && Vpn::available())
++            mainItems.push_back(new MenuItem{ListItemType::Generic, "VPN", "Tailscale", {}, {}, nullptr, nullptr, DeferToSubmenu, new Vpn::Menu(appQuit, ctx.dirty)});
++
+         if(deviceInfo.hasBluetooth())
+             mainItems.push_back(new MenuItem{ListItemType::Generic, "Bluetooth", "", {}, {}, nullptr, nullptr, DeferToSubmenu, new Bluetooth::Menu(appQuit, ctx.dirty)});
+ 
+diff --git a/workspace/all/settings/vpnmenu.cpp b/workspace/all/settings/vpnmenu.cpp
+new file mode 100644
+index 0000000..ea24893
+--- /dev/null
++++ b/workspace/all/settings/vpnmenu.cpp
+@@ -0,0 +1,660 @@
++#include "vpnmenu.hpp"
++
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <sstream>
++#include <vector>
++
++#include <dirent.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/time.h>
++#include <sys/un.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include <shared_mutex>
++typedef std::shared_mutex Lock;
++typedef std::unique_lock<Lock> WriteLock;
++
++extern char **environ;
++
++using namespace Vpn;
++
++namespace
++{
++    // Same layout as the Tailscale pak (josegonzalez/minui-tailscale-pak), so
++    // the pak and this menu can be used interchangeably.
++    const char *PAK_DIR = TOOLS_PATH "/Tailscale.pak";
++    const char *STATE_DIR = USERDATA_PATH "/Tailscale/";
++    const char *AUTO_SH = USERDATA_PATH "/auto.sh";
++    const char *DAEMON_LOG = USERDATA_PATH "/logs/Tailscale.settings.txt";
++    const char *AUTHKEY_FILE = SDCARD_PATH "/authkey";
++    const char *LOGIN_SERVER_DROP = SDCARD_PATH "/loginserver";
++    const char *LOGIN_SERVER_FILE = USERDATA_PATH "/Tailscale/loginserver";
++    const char *SOCKET_PATH = "/var/run/tailscale/tailscaled.sock";
++    const char *HOSTNAME = "minui"; // the pak's hostname
++    // auto.sh marker: also read by the pak and by the status bar (VPN icon)
++    const char *BOOT_MARK = "Tailscale.pak-on-boot";
++
++    bool isExecutable(const std::string &path) { return access(path.c_str(), X_OK) == 0; }
++
++    // Tailscale.pak, or Tailscale.pak.disabled once hidden from Tools; "" if absent.
++    std::string pakDir()
++    {
++        std::string d = PAK_DIR;
++        if (isExecutable(d + "/bin/arm64/tailscaled"))
++            return d;
++        d += ".disabled";
++        if (isExecutable(d + "/bin/arm64/tailscaled"))
++            return d;
++        return "";
++    }
++
++    // Boot line for auto.sh: finds the pak (visible or hidden) at boot time and
++    // starts tailscaled with the pak's state directory.
++    std::string bootLine()
++    {
++        return std::string("(d=\"") + PAK_DIR + "\"; [ -x \"$d/bin/arm64/tailscaled\" ] || d=\"$d.disabled\"; "
++               "cd / && SSL_CERT_FILE=\"$d/ca-certificates.crt\" exec \"$d/bin/arm64/tailscaled\" --statedir=\"" +
++               STATE_DIR + "\" --no-logs-no-support >\"" USERDATA_PATH "/logs/Tailscale.on-boot.txt\" 2>&1) & # " +
++               BOOT_MARK + " (Settings > VPN)";
++    }
++
++    std::vector<std::string> readLines(const char *path, bool &exists)
++    {
++        std::vector<std::string> lines;
++        std::ifstream in(path);
++        exists = in.good();
++        std::string l;
++        while (std::getline(in, l))
++            lines.push_back(l);
++        return lines;
++    }
++
++    bool bootEnabled()
++    {
++        bool exists;
++        for (auto &l : readLines(AUTO_SH, exists))
++            if (l.find(BOOT_MARK) != std::string::npos)
++                return true;
++        return false;
++    }
++
++    // Rewrites auto.sh without any Tailscale boot line, plus ours when on.
++    // Other lines are kept as they are.
++    bool writeBoot(bool on)
++    {
++        bool exists;
++        std::vector<std::string> lines, kept;
++        for (auto &l : readLines(AUTO_SH, exists))
++            if (l.find(BOOT_MARK) == std::string::npos)
++                kept.push_back(l);
++        if (kept.empty())
++            kept = {"#!/bin/sh", ""};
++        if (on)
++            kept.push_back(bootLine());
++
++        std::string tmp = std::string(AUTO_SH) + ".tmp";
++        {
++            std::ofstream out(tmp, std::ios::trunc);
++            if (!out)
++                return false;
++            for (auto &l : kept)
++                out << l << "\n";
++            if (!out.good())
++                return false;
++        }
++        if (rename(tmp.c_str(), AUTO_SH) != 0)
++        {
++            unlink(tmp.c_str());
++            return false;
++        }
++        chmod(AUTO_SH, 0755);
++        sync();
++        return true;
++    }
++
++    std::vector<pid_t> daemonPids()
++    {
++        std::vector<pid_t> pids;
++        DIR *d = opendir("/proc");
++        if (!d)
++            return pids;
++        while (dirent *e = readdir(d))
++        {
++            char *end;
++            long pid = strtol(e->d_name, &end, 10);
++            if (*end || pid <= 0)
++                continue;
++            char path[64], comm[32] = {0};
++            snprintf(path, sizeof(path), "/proc/%ld/comm", pid);
++            FILE *f = fopen(path, "r");
++            if (!f)
++                continue;
++            if (fgets(comm, sizeof(comm), f) && strncmp(comm, "tailscaled", 10) == 0 &&
++                (comm[10] == '\n' || comm[10] == 0))
++                pids.push_back((pid_t)pid);
++            fclose(f);
++        }
++        closedir(d);
++        return pids;
++    }
++
++    // GET on tailscaled's LocalAPI (unix socket, HTTP/1.0). Body or "" on error.
++    std::string localApi(const char *path)
++    {
++        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++        if (fd < 0)
++            return "";
++        timeval tv{2, 0};
++        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++        sockaddr_un addr{};
++        addr.sun_family = AF_UNIX;
++        strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
++        std::string resp;
++        if (connect(fd, (sockaddr *)&addr, sizeof(addr)) == 0)
++        {
++            std::string req = std::string("GET ") + path + " HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n";
++            if (write(fd, req.data(), req.size()) == (ssize_t)req.size())
++            {
++                char buf[4096];
++                ssize_t n;
++                while ((n = read(fd, buf, sizeof(buf))) > 0 && resp.size() < (1 << 20))
++                    resp.append(buf, n);
++            }
++        }
++        close(fd);
++        if (resp.compare(0, 9, "HTTP/1.0 ") != 0 && resp.compare(0, 9, "HTTP/1.1 ") != 0)
++            return "";
++        if (resp.compare(9, 3, "200") != 0)
++            return "";
++        auto body = resp.find("\r\n\r\n");
++        return body == std::string::npos ? "" : resp.substr(body + 4);
++    }
++
++    // Minimal JSON lookups: the status document is small and well formed.
++    size_t jsonKey(const std::string &json, const char *key, size_t from = 0)
++    {
++        std::string k = std::string("\"") + key + "\"";
++        size_t p = json.find(k, from);
++        if (p == std::string::npos)
++            return p;
++        p = json.find(':', p + k.size());
++        if (p == std::string::npos)
++            return p;
++        p = json.find_first_not_of(" \t\r\n", p + 1);
++        return p;
++    }
++
++    // String at json[p] (which must be a quote); sets p past it.
++    std::string jsonStringAt(const std::string &json, size_t &p)
++    {
++        std::string s;
++        if (p >= json.size() || json[p] != '"')
++            return s;
++        for (p++; p < json.size() && json[p] != '"'; p++)
++        {
++            if (json[p] == '\\' && p + 1 < json.size())
++                p++;
++            s += json[p];
++        }
++        p++;
++        return s;
++    }
++
++    std::string jsonString(const std::string &json, const char *key, size_t from = 0)
++    {
++        size_t p = jsonKey(json, key, from);
++        return p == std::string::npos ? "" : jsonStringAt(json, p);
++    }
++
++    // First IPv4 in the top-level "TailscaleIPs" array.
++    std::string jsonFirstIPv4(const std::string &json)
++    {
++        size_t p = jsonKey(json, "TailscaleIPs");
++        if (p == std::string::npos || json[p] != '[')
++            return "";
++        while (true)
++        {
++            p = json.find_first_of("\"]", p);
++            if (p == std::string::npos || json[p] == ']')
++                return "";
++            std::string ip = jsonStringAt(json, p);
++            if (ip.find('.') != std::string::npos)
++                return ip;
++        }
++    }
++
++    Status readStatus()
++    {
++        Status s;
++        s.installed = !pakDir().empty();
++        s.running = !daemonPids().empty();
++        if (!s.running)
++            return s;
++        std::string json = localApi("/localapi/v0/status?peers=false");
++        if (json.empty())
++            return s;
++        s.responding = true;
++        s.backend = jsonString(json, "BackendState");
++        s.ip = jsonFirstIPv4(json);
++        size_t self = json.find("\"Self\"");
++        if (self != std::string::npos)
++        {
++            s.host = jsonString(json, "HostName", self);
++            s.dns = jsonString(json, "DNSName", self);
++            if (!s.dns.empty() && s.dns.back() == '.')
++                s.dns.pop_back();
++        }
++        return s;
++    }
++
++    // Starts tailscaled detached from Settings: own session, no inherited
++    // descriptors (framebuffer, input), output to DAEMON_LOG.
++    bool spawnDaemon(const std::string &dir)
++    {
++        mkdir(STATE_DIR, 0755);
++        std::string bin = dir + "/bin/arm64/tailscaled";
++        std::string statedir = std::string("--statedir=") + STATE_DIR;
++        std::vector<std::string> env;
++        for (char **e = environ; *e; e++)
++            if (strncmp(*e, "SSL_CERT_FILE=", 14) != 0)
++                env.push_back(*e);
++        env.push_back("SSL_CERT_FILE=" + dir + "/ca-certificates.crt");
++        std::vector<char *> envp;
++        for (auto &e : env)
++            envp.push_back(const_cast<char *>(e.c_str()));
++        envp.push_back(nullptr);
++        const char *argv[] = {"tailscaled", statedir.c_str(), "--no-logs-no-support", nullptr};
++
++        pid_t pid = fork();
++        if (pid < 0)
++            return false;
++        if (pid == 0)
++        {
++            // double fork: the daemon is reparented to init, no zombie here
++            if (fork() != 0)
++                _exit(0);
++            setsid();
++            sigset_t none;
++            sigemptyset(&none);
++            sigprocmask(SIG_SETMASK, &none, nullptr);
++            struct sigaction dfl{};
++            dfl.sa_handler = SIG_DFL;
++            for (int sig = 1; sig < NSIG; sig++)
++                sigaction(sig, &dfl, nullptr);
++            int in = open("/dev/null", O_RDONLY);
++            int out = open(DAEMON_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
++            if (out < 0)
++                out = open("/dev/null", O_WRONLY);
++            dup2(in, 0);
++            dup2(out, 1);
++            dup2(out, 2);
++            for (int fd = 3; fd < 1024; fd++)
++                close(fd);
++            if (chdir("/") != 0)
++                _exit(126);
++            execve(bin.c_str(), const_cast<char **>(argv), envp.data());
++            _exit(127);
++        }
++        int st;
++        waitpid(pid, &st, 0);
++        return true;
++    }
++
++    bool stopDaemon()
++    {
++        for (pid_t p : daemonPids())
++            kill(p, SIGTERM);
++        for (int i = 0; i < 100; i++) // 10 s
++        {
++            if (daemonPids().empty())
++                return true;
++            usleep(100 * 1000);
++        }
++        for (pid_t p : daemonPids())
++            kill(p, SIGKILL);
++        usleep(500 * 1000);
++        return daemonPids().empty();
++    }
++
++    // Runs a command, returns its exit status and its last output line.
++    int run(const std::string &cmd, std::string &lastLine)
++    {
++        LOG_info("vpn: %s\n", cmd.c_str());
++        FILE *p = popen((cmd + " 2>&1").c_str(), "r");
++        if (!p)
++            return -1;
++        char buf[512];
++        while (fgets(buf, sizeof(buf), p))
++        {
++            std::string l = buf;
++            while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
++                l.pop_back();
++            if (!l.empty())
++                lastLine = l;
++            LOG_info("vpn:   %s\n", l.c_str());
++        }
++        int st = pclose(p);
++        return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
++    }
++
++    // Shell-safe single-quoted argument.
++    std::string quote(const std::string &s)
++    {
++        std::string q = "'";
++        for (char c : s)
++            q += c == '\'' ? std::string("'\\''") : std::string(1, c);
++        return q + "'";
++    }
++
++    // Custom control server (Headscale...): like the pak, /loginserver on the
++    // SD card is moved into the state directory and reused afterwards.
++    std::string loginServer()
++    {
++        bool exists;
++        auto drop = readLines(LOGIN_SERVER_DROP, exists);
++        if (exists && !drop.empty() && !drop[0].empty())
++        {
++            std::string url = drop[0];
++            while (!url.empty() && (url.back() == '\r' || url.back() == ' '))
++                url.pop_back();
++            mkdir(STATE_DIR, 0755);
++            std::ofstream(LOGIN_SERVER_FILE, std::ios::trunc) << url;
++            unlink(LOGIN_SERVER_DROP);
++            sync();
++        }
++        auto stored = readLines(LOGIN_SERVER_FILE, exists);
++        return exists && !stored.empty() ? stored[0] : "";
++    }
++
++    // `tailscale up` with the pak's flags (non-default flags must all be
++    // repeated, or the CLI refuses to change settings).
++    int tailscaleUp(const std::string &dir, bool withAuthKey, std::string &lastLine)
++    {
++        std::string cmd = quote(dir + "/bin/arm64/tailscale") + " up --hostname=" + HOSTNAME +
++                          " --accept-routes --accept-dns --timeout=30s";
++        std::string server = loginServer();
++        if (!server.empty())
++            cmd += " --login-server=" + quote(server);
++        if (withAuthKey)
++            cmd += " --auth-key=" + quote(std::string("file:") + AUTHKEY_FILE);
++        return run(cmd, lastLine);
++    }
++
++    // Waits for the LocalAPI to report a settled backend state.
++    Status waitForBackend(int seconds)
++    {
++        Status s;
++        for (int i = 0; i < seconds * 4; i++)
++        {
++            s = readStatus();
++            if (!s.running)
++                return s;
++            if (s.responding && !s.backend.empty() && s.backend != "NoState")
++                return s;
++            usleep(250 * 1000);
++        }
++        return s;
++    }
++}
++
++bool Vpn::available()
++{
++    return !pakDir().empty();
++}
++
++Menu::Menu(const int &globalQuit, int &globalDirty)
++    : MenuList(MenuItemType::Fixed, "VPN", {}), globalQuit(globalQuit), globalDirty(globalDirty)
++{
++    // An older boot line (written by the pak) only works while the pak keeps
++    // its name: replace it with ours, which also finds a hidden pak.
++    {
++        bool exists;
++        bool mark = false, ours = false;
++        for (auto &l : readLines(AUTO_SH, exists))
++            if (l.find(BOOT_MARK) != std::string::npos)
++            {
++                mark = true;
++                ours = ours || l == bootLine();
++            }
++        if (mark && !ours)
++            writeBoot(true);
++    }
++
++    status = readStatus();
++
++    toggleItem = new MenuItem(ListItemType::Generic, "Tailscale", "Connect to your tailnet", {false, true}, {"Off", "On"},
++                              std::bind(&Menu::getEnabled, this),
++                              std::bind(&Menu::setEnabled, this, std::placeholders::_1));
++    bootItem = new MenuItem(ListItemType::Generic, "Start on boot", "Start Tailscale when the device boots", {false, true}, {"Off", "On"},
++                            std::bind(&Menu::getBoot, this),
++                            std::bind(&Menu::setBoot, this, std::placeholders::_1));
++    statusItem = new StaticMenuItem(ListItemType::Generic, "Status", "", std::bind(&Menu::statusLabel, this));
++    addressItem = new StaticMenuItem(ListItemType::Generic, "Address", "Tailscale IPv4 address", std::bind(&Menu::addressLabel, this));
++    hostItem = new StaticMenuItem(ListItemType::Generic, "Hostname", "", std::bind(&Menu::hostLabel, this));
++    items = {toggleItem, bootItem, statusItem, addressItem, hostItem};
++    updateItems();
++
++    MenuList::performLayout((SDL_Rect){0, 0, FIXED_WIDTH, FIXED_HEIGHT});
++    layout_called = false;
++
++    worker = std::thread{&Menu::updater, this};
++}
++
++Menu::~Menu()
++{
++    quit = true;
++    if (worker.joinable())
++        worker.join();
++}
++
++InputReactionHint Menu::handleInput(int &dirty, int &quit)
++{
++    auto ret = MenuList::handleInput(dirty, quit);
++    if (selectionDirty.exchange(false))
++        dirty = true;
++    return ret;
++}
++
++Status Menu::snapshot() const
++{
++    std::lock_guard<std::mutex> l(stateLock);
++    return status;
++}
++
++// Stores a new status; true if it changed.
++bool Menu::store(const Status &s)
++{
++    std::lock_guard<std::mutex> l(stateLock);
++    if (s == status)
++        return false;
++    status = s;
++    return true;
++}
++
++// Syncs the toggles and descriptions with the stored status. The caller must
++// own the items: UI thread inside handleInput, or the worker with itemLock.
++void Menu::updateItems()
++{
++    Status s = snapshot();
++    toggleItem->reselect();
++    bootItem->reselect();
++
++    std::string desc;
++    if (!s.installed)
++        desc = "Tailscale.pak not found in Tools";
++    else if (s.running && !s.responding)
++        desc = "tailscaled does not answer";
++    else if (s.backend == "NeedsLogin")
++        desc = "Copy an auth key to /authkey on the SD card, then turn on";
++    else if (s.backend == "NeedsMachineAuth")
++        desc = "Approve this device in the Tailscale admin console";
++    else if (s.backend == "Stopped")
++        desc = "Turn Tailscale on to resume";
++    else if (s.running && (s.backend != "Running" || s.ip.empty()) && !PWR_isOnline())
++        desc = "No WiFi connection";
++    else if (!s.running && bootEnabled())
++        desc = "Starts on next boot";
++    else if (s.running && !s.dns.empty())
++        desc = s.dns;
++    statusItem->setDesc(desc);
++    hostItem->setDesc(s.dns);
++}
++
++void Menu::updater()
++{
++    while (!quit && !globalQuit)
++    {
++        for (int i = 0; i < 20 && !quit && !globalQuit; i++) // 2 s
++            std::this_thread::sleep_for(std::chrono::milliseconds(100));
++        if (quit || globalQuit)
++            break;
++
++        bool changed;
++        {
++            // skip this round while a start/stop is in progress
++            std::unique_lock<std::mutex> op(opLock, std::try_to_lock);
++            if (!op.owns_lock())
++                continue;
++            changed = store(readStatus());
++        }
++        if (changed)
++        {
++            WriteLock w(itemLock);
++            updateItems();
++            selectionDirty = true;
++        }
++    }
++}
++
++std::any Menu::getEnabled() const
++{
++    Status s = snapshot();
++    return s.running && s.backend != "Stopped" && s.backend != "NeedsLogin";
++}
++
++void Menu::setEnabled(const std::any &on)
++{
++    bool enable = std::any_cast<bool>(on);
++    std::string error;
++    {
++        std::lock_guard<std::mutex> op(opLock);
++        std::string dir = pakDir();
++        if (dir.empty())
++            error = "Tailscale is not installed.\nInstall the Tailscale pak in Tools.";
++        else if (enable)
++        {
++            ScopedOverlay overlay("Starting Tailscale...");
++            bool started = false;
++            if (daemonPids().empty())
++            {
++                if (!spawnDaemon(dir))
++                    error = "Could not start tailscaled.";
++                started = true;
++            }
++            Status s = error.empty() ? waitForBackend(15) : Status{};
++            std::string last;
++            if (!error.empty())
++            {
++                // spawn failed, nothing to check
++            }
++            else if (!s.running)
++                error = "tailscaled stopped.\nSee logs/Tailscale.settings.txt.";
++            else if (!s.responding)
++                error = "tailscaled does not answer.";
++            else if (s.backend == "NeedsLogin")
++            {
++                if (access(AUTHKEY_FILE, R_OK) != 0)
++                    error = "Not logged in.\nCopy an auth key to /authkey\non the SD card, then turn on again.";
++                else
++                {
++                    showOverlay("Logging in to Tailscale...");
++                    if (tailscaleUp(dir, true, last) != 0)
++                        error = "Login failed:\n" + last;
++                    unlink(AUTHKEY_FILE); // single use, like the pak
++                    sync();
++                }
++            }
++            else if (s.backend == "Stopped")
++            {
++                if (tailscaleUp(dir, false, last) != 0)
++                    error = "Could not connect:\n" + last;
++            }
++            // a daemon we started for a failed login is useless: stop it
++            if (!error.empty() && started)
++                stopDaemon();
++        }
++        else
++        {
++            ScopedOverlay overlay("Stopping Tailscale...");
++            if (!stopDaemon())
++                error = "Could not stop tailscaled.";
++        }
++        store(readStatus());
++    }
++    updateItems();
++    if (!error.empty())
++    {
++        LOG_error("vpn: %s\n", error.c_str());
++        showOverlay(error, OverlayDismissMode::DismissOnA);
++    }
++}
++
++std::any Menu::getBoot() const
++{
++    return bootEnabled();
++}
++
++void Menu::setBoot(const std::any &on)
++{
++    bool enable = std::any_cast<bool>(on);
++    bool ok = writeBoot(enable);
++    updateItems();
++    if (!ok)
++        showOverlay("Could not update auto.sh.", OverlayDismissMode::DismissOnA);
++}
++
++std::any Menu::statusLabel() const
++{
++    Status s = snapshot();
++    std::string l;
++    if (!s.installed)
++        l = "Not installed";
++    else if (!s.running)
++        l = "Off";
++    else if (!s.responding)
++        l = "Failed";
++    else if (s.backend == "Running")
++        l = s.ip.empty() ? "Connecting" : "Connected";
++    else if (s.backend == "Starting" || s.backend == "NoState" || s.backend.empty())
++        l = "Connecting";
++    else if (s.backend == "NeedsLogin")
++        l = "Logged out";
++    else if (s.backend == "NeedsMachineAuth")
++        l = "Needs approval";
++    else if (s.backend == "Stopped")
++        l = "Paused";
++    else
++        l = s.backend;
++    return l;
++}
++
++std::any Menu::addressLabel() const
++{
++    Status s = snapshot();
++    // only while connected: a paused node keeps its address in the status
++    return s.running && s.backend == "Running" && !s.ip.empty() ? s.ip : std::string("-");
++}
++
++std::any Menu::hostLabel() const
++{
++    Status s = snapshot();
++    return s.running && !s.host.empty() ? s.host : std::string("-");
++}
+diff --git a/workspace/all/settings/vpnmenu.hpp b/workspace/all/settings/vpnmenu.hpp
+new file mode 100644
+index 0000000..b8d8892
+--- /dev/null
++++ b/workspace/all/settings/vpnmenu.hpp
+@@ -0,0 +1,73 @@
++#pragma once
++
++#include "menu.hpp"
++#include <atomic>
++#include <mutex>
++#include <thread>
++
++// Settings > VPN: Tailscale control without the Tailscale pak's own screen.
++// The binaries still come from Tools/<platform>/Tailscale.pak (or
++// Tailscale.pak.disabled once the pak is hidden from Tools); the node state
++// stays in .userdata/<platform>/Tailscale/, shared with the pak.
++namespace Vpn
++{
++    // true if a Tailscale install (pak, visible or hidden) is present
++    bool available();
++
++    struct Status
++    {
++        bool installed = false;
++        bool running = false;    // tailscaled process alive
++        bool responding = false; // LocalAPI answered
++        std::string backend;     // BackendState (Running, NeedsLogin, Stopped...)
++        std::string ip;          // first Tailscale IPv4
++        std::string host;        // Self.HostName
++        std::string dns;         // Self.DNSName, without the trailing dot
++        bool operator==(const Status &o) const
++        {
++            return installed == o.installed && running == o.running && responding == o.responding &&
++                   backend == o.backend && ip == o.ip && host == o.host && dns == o.dns;
++        }
++    };
++
++    class Menu : public MenuList
++    {
++        const int &globalQuit;
++        int &globalDirty;
++
++        MenuItem *toggleItem;
++        MenuItem *bootItem;
++        StaticMenuItem *statusItem;
++        StaticMenuItem *addressItem;
++        StaticMenuItem *hostItem;
++
++        std::thread worker;
++        std::atomic<bool> quit{false};
++        std::atomic<bool> selectionDirty{false};
++
++        mutable std::mutex stateLock; // guards status
++        Status status;
++        std::mutex opLock; // held while starting/stopping
++
++    public:
++        Menu(const int &globalQuit, int &globalDirty);
++        ~Menu();
++
++        InputReactionHint handleInput(int &dirty, int &quit) override;
++
++    private:
++        Status snapshot() const;
++        bool store(const Status &s);
++        void updateItems();
++        void updater();
++
++        std::any getEnabled() const;
++        void setEnabled(const std::any &on);
++        std::any getBoot() const;
++        void setBoot(const std::any &on);
++
++        std::any statusLabel() const;
++        std::any addressLabel() const;
++        std::any hostLabel() const;
++    };
++}

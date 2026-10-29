@@ -1,0 +1,449 @@
+diff --git a/workspace/all/nextui/nextui.c b/workspace/all/nextui/nextui.c
+index 78f1fe1..6cd13ff 100644
+--- a/workspace/all/nextui/nextui.c
++++ b/workspace/all/nextui/nextui.c
+@@ -1012,6 +1012,8 @@ static void addEntries(Array* entries, char* path) {
+ 			if (hide(dp->d_name)) continue;
+ 			// Tailscale is driven from Settings > VPN (same build), keep the pak out of Tools
+ 			if (exactMatch("Tailscale.pak", dp->d_name) && exactMatch(TOOLS_PATH, path)) continue;
++			// Clock and Pad Setup live in Settings (System > Date and time, Controller)
++			if ((exactMatch("Clock.pak", dp->d_name) || exactMatch("Pad Setup.pak", dp->d_name)) && exactMatch(TOOLS_PATH, path)) continue;
+ 			strcpy(tmp, dp->d_name);
+ 			int is_dir = dp->d_type==DT_DIR;
+ 			int type;
+diff --git a/workspace/all/settings/clockmenu.cpp b/workspace/all/settings/clockmenu.cpp
+new file mode 100644
+index 0000000..6955007
+--- /dev/null
++++ b/workspace/all/settings/clockmenu.cpp
+@@ -0,0 +1,176 @@
++#include "clockmenu.hpp"
++
++#include <cstdio>
++#include <ctime>
++#include <mutex>
++
++using namespace Clock;
++
++namespace
++{
++    // Values being edited, loaded from the system clock when the editor opens.
++    struct Pending
++    {
++        int year, month, day, hour, minute;
++    } pending;
++
++    const std::vector<std::string> MONTHS = {"January", "February", "March", "April", "May", "June", "July",
++                                             "August", "September", "October", "November", "December"};
++
++    void loadNow()
++    {
++        time_t t = time(NULL);
++        struct tm tm = *localtime(&t);
++        pending = {tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min};
++    }
++
++    int daysIn(int year, int month)
++    {
++        static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
++        bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
++        return (month == 2 && leap) ? 29 : days[month - 1];
++    }
++
++    std::string hourLabel(int h, bool h24)
++    {
++        char buf[16];
++        if (h24)
++            snprintf(buf, sizeof(buf), "%02d", h);
++        else
++            snprintf(buf, sizeof(buf), "%d %s", h % 12 == 0 ? 12 : h % 12, h < 12 ? "AM" : "PM");
++        return buf;
++    }
++
++    std::vector<std::any> range(int from, int to)
++    {
++        std::vector<std::any> v;
++        for (int i = from; i <= to; i++)
++            v.push_back(i);
++        return v;
++    }
++
++    std::vector<std::string> labels(int from, int to, const char *fmt)
++    {
++        std::vector<std::string> v;
++        char buf[16];
++        for (int i = from; i <= to; i++)
++        {
++            snprintf(buf, sizeof(buf), fmt, i);
++            v.push_back(buf);
++        }
++        return v;
++    }
++
++    MenuItem *field(const std::string &name, const std::string &desc, int from, int to,
++                    const std::vector<std::string> &names, int Pending::*member)
++    {
++        return new MenuItem{ListItemType::Generic, name, desc, range(from, to), names,
++                            [member]() -> std::any { return pending.*member; },
++                            [member](const std::any &v) { pending.*member = std::any_cast<int>(v); }};
++    }
++
++    // The row in System: label = current date and time.
++    class DateTimeItem : public MenuItem
++    {
++    public:
++        using MenuItem::MenuItem;
++        const std::string getLabel() const override
++        {
++            time_t t = time(NULL);
++            char buf[32];
++            strftime(buf, sizeof(buf), CFG_getClock24H() ? "%Y-%m-%d %H:%M" : "%Y-%m-%d %I:%M %p", localtime(&t));
++            return buf;
++        }
++    };
++}
++
++AbstractMenuItem *Clock::buildDateTimeItem()
++{
++    loadNow();
++    bool h24 = CFG_getClock24H();
++    std::vector<std::string> hours;
++    for (int h = 0; h < 24; h++)
++        hours.push_back(hourLabel(h, h24));
++
++    std::vector<MenuItem *> fields = {
++        field("Year", "", 2000, 2099, labels(2000, 2099, "%d"), &Pending::year),
++        field("Month", "", 1, 12, MONTHS, &Pending::month),
++        field("Day", "Clamped to the length of the month", 1, 31, labels(1, 31, "%d"), &Pending::day),
++        field("Hour", "", 0, 23, hours, &Pending::hour),
++        field("Minute", "Seconds are set to 00", 0, 59, labels(0, 59, "%02d"), &Pending::minute),
++    };
++    std::vector<AbstractMenuItem *> items(fields.begin(), fields.end());
++    items.push_back(new MenuItem{ListItemType::Button, "Set date and time", "Apply now. B leaves without changing the clock.",
++        [](AbstractMenuItem &item) -> InputReactionHint {
++            int day = std::min(pending.day, daysIn(pending.year, pending.month));
++            PLAT_setDateTime(pending.year, pending.month, day, pending.hour, pending.minute, 0);
++            return Exit; // back to System
++        }});
++    auto *editor = new MenuList(MenuItemType::Fixed, "Date and time", items);
++
++    return new DateTimeItem{ListItemType::Generic, "Date and time", "Set the clock by hand.\nOnly while automatic time is off.",
++        std::vector<std::any>{0}, std::vector<std::string>{""}, nullptr, nullptr, nullptr,
++        [fields](AbstractMenuItem &item) -> InputReactionHint {
++            loadNow();
++            for (auto *f : fields)
++                f->reselect();
++            return DeferToSubmenu(item);
++        }, editor};
++}
++
++SystemMenu::SystemMenu(const std::string &desc, std::vector<AbstractMenuItem *> items, AbstractMenuItem *dateTime)
++    : MenuList(MenuItemType::Fixed, desc, items), dateTime(dateTime)
++{
++    auto it = std::find(items.begin(), items.end(), dateTime);
++    assert(it != items.end());
++    position = (int)(it - items.begin());
++    sync();
++}
++
++SystemMenu::~SystemMenu()
++{
++    if (!shown)
++        delete dateTime; // not in items, the base class would not free it
++}
++
++InputReactionHint SystemMenu::handleInput(int &dirty, int &quit)
++{
++    InputReactionHint hint = MenuList::handleInput(dirty, quit);
++    if (sync())
++        dirty = 1;
++    return hint;
++}
++
++// Adds or removes the row to follow the network time setting; true if changed.
++bool SystemMenu::sync()
++{
++    bool want = !TIME_getNetworkTimeSync();
++    if (want == shown)
++        return false;
++
++    std::unique_lock<std::shared_mutex> w(itemLock);
++    if (want)
++    {
++        items.insert(items.begin() + position, dateTime);
++        if (scope.selected >= position)
++            scope.selected++;
++    }
++    else
++    {
++        items.erase(items.begin() + position);
++        if (scope.selected > position)
++            scope.selected--;
++    }
++    shown = want;
++
++    scope.count = (int)items.size();
++    scope.selected = std::max(0, std::min(scope.selected, scope.count - 1));
++    scope.visible_rows = std::min(scope.count, scope.max_visible_options);
++    if (scope.selected < scope.start)
++        scope.start = scope.selected;
++    if (scope.selected >= scope.start + scope.visible_rows)
++        scope.start = scope.selected - scope.visible_rows + 1;
++    scope.start = std::max(0, std::min(scope.start, scope.count - scope.visible_rows));
++    scope.end = scope.start + scope.visible_rows;
++    return true;
++}
+diff --git a/workspace/all/settings/clockmenu.hpp b/workspace/all/settings/clockmenu.hpp
+new file mode 100644
+index 0000000..c65c73b
+--- /dev/null
++++ b/workspace/all/settings/clockmenu.hpp
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include "menu.hpp"
++
++// Manual date and time in Settings > System (replaces the Clock tool, hidden
++// from Tools by the launcher). The "Date and time" row is only listed while
++// "Set time and date automatically" is off.
++namespace Clock
++{
++    // "Date and time" row: shows the current time, A opens the editor.
++    AbstractMenuItem *buildDateTimeItem();
++
++    // A Fixed list that shows dateTime only while network time sync is off.
++    // dateTime must be one of items; this menu owns it either way.
++    class SystemMenu : public MenuList
++    {
++        AbstractMenuItem *dateTime;
++        int position{0};
++        bool shown{true};
++        bool sync();
++
++    public:
++        SystemMenu(const std::string &desc, std::vector<AbstractMenuItem *> items, AbstractMenuItem *dateTime);
++        ~SystemMenu();
++        InputReactionHint handleInput(int &dirty, int &quit) override;
++    };
++}
+diff --git a/workspace/all/settings/controllermenu.cpp b/workspace/all/settings/controllermenu.cpp
+new file mode 100644
+index 0000000..289ef05
+--- /dev/null
++++ b/workspace/all/settings/controllermenu.cpp
+@@ -0,0 +1,98 @@
++#include "controllermenu.hpp"
++
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <string>
++
++#include <limits.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace
++{
++    const char *PAK_DIR = TOOLS_PATH "/Pad Setup.pak";
++    const char *REOPEN_ENV = "NEXTUI_SETTINGS_MENU";
++    const char *REOPEN_VALUE = "Controller";
++
++    std::string queued; // shell command run by runQueued()
++
++    std::string quoted(const std::string &s)
++    {
++        std::string out = "'";
++        for (char c : s)
++            out += (c == '\'') ? std::string("'\\''") : std::string(1, c);
++        return out + "'";
++    }
++
++    // External pads: js0 is the built-in controls, js1 and up are pads
++    // (same rule as the status bar icon).
++    std::string connectedLabel()
++    {
++        std::string first;
++        int count = 0;
++        for (int i = 1; i < 10; i++)
++        {
++            std::ifstream in("/sys/class/input/js" + std::to_string(i) + "/device/name");
++            if (!in.good())
++                continue;
++            std::string name;
++            std::getline(in, name);
++            if (count++ == 0)
++                first = name.empty() ? std::string("1 controller") : name;
++        }
++        if (count == 0)
++            return "None";
++        if (count == 1)
++            return first;
++        return std::to_string(count) + " controllers";
++    }
++}
++
++bool Controller::available()
++{
++    return access((std::string(PAK_DIR) + "/launch.sh").c_str(), R_OK) == 0;
++}
++
++MenuList *Controller::buildMenu(int &appQuit)
++{
++    int *quit = &appQuit;
++    return new MenuList(MenuItemType::Fixed, "Controller",
++    {
++        new StaticMenuItem{ListItemType::Generic, "Connected", "External controllers seen by the system",
++        []() -> std::any { return connectedLabel(); }},
++        new MenuItem{ListItemType::Button, "Pad Setup", "Map the buttons of an external controller\nthat the games read wrongly. Back here afterwards.",
++        [quit](AbstractMenuItem &item) -> InputReactionHint {
++            char cwd[PATH_MAX];
++            if (!available() || !getcwd(cwd, sizeof(cwd))) {
++                item.setDesc("Pad Setup is not installed");
++                return NoOp;
++            }
++            // The pak, then Settings again from its own folder (launch.sh
++            // does a cd there), opened on this menu.
++            queued = quoted(std::string(PAK_DIR) + "/launch.sh") + "; cd " + quoted(cwd) +
++                     " && " + REOPEN_ENV + "=" + REOPEN_VALUE + " exec ./launch.sh";
++            *quit = 1;
++            return NoOp;
++        }},
++    });
++}
++
++bool Controller::reopenRequested()
++{
++    const char *v = getenv(REOPEN_ENV);
++    bool yes = v && strcmp(v, REOPEN_VALUE) == 0;
++    unsetenv(REOPEN_ENV);
++    return yes;
++}
++
++void Controller::runQueued()
++{
++    if (queued.empty())
++        return;
++    LOG_info("Controller: running %s\n", queued.c_str());
++    fflush(stdout);
++    fflush(stderr);
++    execl("/bin/sh", "sh", "-c", queued.c_str(), (char *)NULL);
++    LOG_error("Controller: exec failed\n");
++}
+diff --git a/workspace/all/settings/controllermenu.hpp b/workspace/all/settings/controllermenu.hpp
+new file mode 100644
+index 0000000..1fe2655
+--- /dev/null
++++ b/workspace/all/settings/controllermenu.hpp
+@@ -0,0 +1,22 @@
++#pragma once
++
++#include "menu.hpp"
++
++// Settings > Controller: external pads. "Pad Setup" runs the Pad Setup pak
++// (Tools/<platform>/Pad Setup.pak, hidden from Tools by the launcher) once
++// Settings has exited, then reopens Settings on this menu.
++namespace Controller
++{
++    // The Pad Setup pak is installed.
++    bool available();
++
++    // The menu; picking "Pad Setup" sets appQuit and queues the pak.
++    MenuList *buildMenu(int &appQuit);
++
++    // Settings was relaunched by the pak: open this menu right away (once).
++    bool reopenRequested();
++
++    // Call last, after GFX_quit(): replaces Settings with the queued pak, if
++    // any (returns only when nothing is queued or exec failed).
++    void runQueued();
++}
+diff --git a/workspace/all/settings/makefile b/workspace/all/settings/makefile
+index f77198a..08f7e20 100644
+--- a/workspace/all/settings/makefile
++++ b/workspace/all/settings/makefile
+@@ -22,7 +22,7 @@ SDL?=SDL
+ TARGET = settings
+ INCDIR = -I. -I../common/ -I../../$(PLATFORM)/platform/
+ SOURCE = -c ../common/utils.c ../common/api.c ../common/config.c ../common/palette.c ../common/scaler.c ../common/http.c ../common/ra_auth.c ../common/ra_offline.c ../common/ra_sync.c ../common/ra_event_queue.c ../../$(PLATFORM)/platform/platform.c
+-CXXSOURCE = $(TARGET).cpp menu.cpp colorpickermenu.cpp palettemenu.cpp fnbuttonmenu.cpp wifimenu.cpp vpnmenu.cpp btmenu.cpp keyboardprompt.cpp
++CXXSOURCE = $(TARGET).cpp menu.cpp colorpickermenu.cpp palettemenu.cpp fnbuttonmenu.cpp wifimenu.cpp vpnmenu.cpp controllermenu.cpp clockmenu.cpp btmenu.cpp keyboardprompt.cpp
+ CXXSOURCE += build/$(PLATFORM)/utils.o build/$(PLATFORM)/api.o build/$(PLATFORM)/config.o build/$(PLATFORM)/palette.o build/$(PLATFORM)/scaler.o build/$(PLATFORM)/http.o build/$(PLATFORM)/ra_auth.o build/$(PLATFORM)/ra_offline.o build/$(PLATFORM)/ra_sync.o build/$(PLATFORM)/ra_event_queue.o build/$(PLATFORM)/platform.o
+ 
+ CC = $(CROSS_COMPILE)gcc
+diff --git a/workspace/all/settings/settings.cpp b/workspace/all/settings/settings.cpp
+index 4a17436..678f71e 100644
+--- a/workspace/all/settings/settings.cpp
++++ b/workspace/all/settings/settings.cpp
+@@ -24,6 +24,8 @@ extern "C"
+ #include "wifimenu.hpp"
+ #include "btmenu.hpp"
+ #include "vpnmenu.hpp"
++#include "controllermenu.hpp"
++#include "clockmenu.hpp"
+ #include "keyboardprompt.hpp"
+ #include "colorpickermenu.hpp"
+ #include "palettemenu.hpp"
+@@ -639,6 +641,8 @@ int main(int argc, char *argv[])
+ 
+         auto displayMenu = new MenuList(MenuItemType::Fixed, "Display", displayItems);
+ 
++        // Replaces the Clock tool (hidden from Tools)
++        AbstractMenuItem *dateTimeItem = Clock::buildDateTimeItem();
+         std::vector<AbstractMenuItem*> systemItems = {
+             new MenuItem{ListItemType::Generic, "Volume", "Speaker volume",
+             {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20},
+@@ -678,6 +682,7 @@ int main(int argc, char *argv[])
+             { return TIME_getNetworkTimeSync(); }, [](const std::any &value)
+             { TIME_setNetworkTimeSync(std::any_cast<bool>(value)); },
+             []() { TIME_setNetworkTimeSync(false);}}, // default from stock
++            dateTimeItem, // only listed while automatic time is off
+             new MenuItem{ListItemType::Generic, "Time zone", "Your time zone", tz_values, tz_labels, []() -> std::any
+             { return std::string(TIME_getCurrentTimezone()); }, [](const std::any &value)
+             { TIME_setCurrentTimezone(std::any_cast<std::string>(value).c_str()); },
+@@ -734,7 +739,7 @@ int main(int argc, char *argv[])
+         systemItems.push_back(
+             new MenuItem{ListItemType::Button, "Reset to defaults", "Resets all options in this menu to their default values.", ResetCurrentMenu});
+ 
+-        auto systemMenu = new MenuList(MenuItemType::Fixed, "System", systemItems);
++        auto systemMenu = new Clock::SystemMenu("System", systemItems, dateTimeItem);
+ 
+         std::vector<AbstractMenuItem*> muteItems =
+         {
+@@ -1153,6 +1158,13 @@ int main(int argc, char *argv[])
+ 
+         mainItems.push_back(new MenuItem{ListItemType::Generic, "In-Game", "In-game settings for MinArch", {}, {}, nullptr, nullptr, DeferToSubmenu, minarchMenu});
+ 
++        // External pads, when the Pad Setup pak is installed (hidden from Tools)
++        int controllerIndex = -1;
++        if(Controller::available()) {
++            controllerIndex = (int)mainItems.size();
++            mainItems.push_back(new MenuItem{ListItemType::Generic, "Controller", "External controllers", {}, {}, nullptr, nullptr, DeferToSubmenu, Controller::buildMenu(appQuit)});
++        }
++
+         if(deviceInfo.hasWifi())
+             mainItems.push_back(new MenuItem{ListItemType::Generic, "Network", "", {}, {}, nullptr, nullptr, DeferToSubmenu, new Wifi::Menu(appQuit, ctx.dirty)});
+ 
+@@ -1188,6 +1200,13 @@ int main(int argc, char *argv[])
+             listRect.h -= SCALE1(BUTTON_SIZE);
+         ctx.menu->performLayout(listRect);
+ 
++        // Back from Pad Setup: reopen Controller
++        if (Controller::reopenRequested() && controllerIndex >= 0) {
++            for (int i = 0; i < controllerIndex; i++)
++                ctx.menu->selectNext();
++            mainItems[controllerIndex]->defer(true);
++        }
++
+         while (!appQuit)
+         {
+             GFX_startFrame();
+@@ -1288,6 +1307,8 @@ int main(int argc, char *argv[])
+         BT_quit();
+         GFX_quit();
+ 
++        Controller::runQueued(); // Pad Setup, then Settings again (no return)
++
+         return EXIT_SUCCESS;
+     }
+     catch (const std::exception &e)

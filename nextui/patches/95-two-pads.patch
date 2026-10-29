@@ -1,0 +1,212 @@
+diff --git a/workspace/all/common/api.h b/workspace/all/common/api.h
+index 7ff7c1f8..e9fc7c3a 100644
+--- a/workspace/all/common/api.h
++++ b/workspace/all/common/api.h
+@@ -663,7 +663,7 @@ void PLAT_updateInput(const SDL_Event *event);
+ void PLAT_quitInput(void);
+ 
+ void PLAT_pollInput(void);
+-void PLAT_setPlayersMode(int mode); // 2-player mode: 0 off, 1 console P1 + external pad P2, 2 external pad P1 + console P2
++void PLAT_setPlayersMode(int mode); // 2-player mode: 0 off, 1 console P1 + external pad P2, 2 external pad P1 + console P2, 3 first pad P1 + second pad P2
+ void PLAT_setPlayersActive(int active); // 0 while a menu is open: every pad drives it
+ void PLAT_setPadButtons(int original); // external pad face buttons: 0 Xbox style, 1 like the console
+ int PLAT_padButtonsApply(void); // 1 when that choice matters for the running game
+diff --git a/workspace/all/minarch/ma_config.c b/workspace/all/minarch/ma_config.c
+index 90f616de..48fc6297 100644
+--- a/workspace/all/minarch/ma_config.c
++++ b/workspace/all/minarch/ma_config.c
+@@ -424,7 +424,7 @@ static void Config_readOptionsString(char* cfg) {
+ 	
+ 	if (Config_getValue(cfg,"minarch_players_mode",value,NULL)) {
+ 		players_mode = strtol(value, NULL, 0);
+-		if (players_mode < 0 || players_mode > 2) players_mode = 0;
++		if (players_mode < 0 || players_mode > 3) players_mode = 0;
+ 	}
+ 	if (Config_getValue(cfg,"minarch_pad_buttons",value,NULL)) {
+ 		pad_buttons = strtol(value, NULL, 0) == 1;
+@@ -1310,11 +1310,13 @@ char* gamepad_values[] = {
+ 	NULL,
+ };
+ // 2-player mode: off (the Bluetooth pad also controls player 1), console as
+-// player 1 and Bluetooth pad as player 2, or the other way round.
++// player 1 and Bluetooth pad as player 2, or the other way round, or two
++// Bluetooth pads (the first connected one shares player 1 with the console).
+ char* players_labels[] = {
+ 	"Off",
+ 	"Console P1",
+ 	"Pad P1",
++	"2 pads",
+ 	NULL,
+ };
+ // External pad face buttons in Nintendo games: Xbox style (bottom = A) or like
+diff --git a/workspace/all/minarch/ma_frontend_opts.c b/workspace/all/minarch/ma_frontend_opts.c
+index 3e95f1d1..494ae8de 100644
+--- a/workspace/all/minarch/ma_frontend_opts.c
++++ b/workspace/all/minarch/ma_frontend_opts.c
+@@ -314,7 +314,7 @@ int OptionControls_openMenu(MenuList* list, int i) {
+ 		{
+ 			MenuItem* item = &OptionControls_menu.items[k++];
+ 			item->name = "2-player mode";
+-			item->desc = "Console P1: Bluetooth pad = player 2.\nPad P1: console = player 2. Off: both = player 1.";
++			item->desc = "Console P1: pad = player 2. Pad P1: console = player 2.\n2 pads: second pad = player 2. Off: all = player 1.";
+ 			item->value = players_mode;
+ 			item->values = players_labels;
+ 			item->on_change = OptionControls_optionChanged;
+diff --git a/workspace/all/minarch/ma_input.c b/workspace/all/minarch/ma_input.c
+index f4aee819..9d7177c7 100644
+--- a/workspace/all/minarch/ma_input.c
++++ b/workspace/all/minarch/ma_input.c
+@@ -223,6 +223,13 @@ void input_poll_callback(void) {
+ 	// plateforme) ; mêmes correspondances que le joueur 1, sans MENU+bouton.
+ 	buttons2 = 0;
+ 	if (players_mode) {
++		// Player 2's left stick also acts as the d-pad, as player 1's does
++		// through PAD_setAnalog (pad2 only carries the raw axes).
++		int p2 = pad2.is_pressed;
++		if (pad2.laxis.x < -0x4000) p2 |= BTN_ANALOG_LEFT;
++		if (pad2.laxis.x >  0x4000) p2 |= BTN_ANALOG_RIGHT;
++		if (pad2.laxis.y < -0x4000) p2 |= BTN_ANALOG_UP;
++		if (pad2.laxis.y >  0x4000) p2 |= BTN_ANALOG_DOWN;
+ 		for (int i=0; config.controls[i].name; i++) {
+ 			ButtonMapping* mapping = &config.controls[i];
+ 			int btn = 1 << mapping->local;
+@@ -235,7 +242,7 @@ void input_poll_callback(void) {
+ 					case BTN_DPAD_RIGHT: btn = BTN_RIGHT; break;
+ 				}
+ 			}
+-			if (pad2.is_pressed & btn) buttons2 |= 1 << mapping->retro;
++			if (p2 & btn) buttons2 |= 1 << mapping->retro;
+ 		}
+ 	}
+ 
+diff --git a/workspace/all/minarch/minarch.c b/workspace/all/minarch/minarch.c
+index c32916ab..91f4adf2 100644
+--- a/workspace/all/minarch/minarch.c
++++ b/workspace/all/minarch/minarch.c
+@@ -64,7 +64,7 @@ int rewind_init_ready = 0; // gate Rewind_init from syncFrontend until startup i
+ int overclock = 0; // auto
+ int has_custom_controllers = 0;
+ int gamepad_type = 0; // index in gamepad_labels/gamepad_values
+-int players_mode = 0; // 2-player mode, index in players_labels: 0 off, 1 console P1, 2 pad P1
++int players_mode = 0; // 2-player mode, index in players_labels: 0 off, 1 console P1, 2 pad P1, 3 two pads
+ int pad_buttons = 0; // external pad face buttons, index in pad_buttons_labels: 0 Xbox, 1 Original
+ 
+ // these are no longer constants as of the RG CubeXX (even though they look like it)
+diff --git a/workspace/h700/platform/platform.c b/workspace/h700/platform/platform.c
+index 994ea1ec..c43c9d66 100644
+--- a/workspace/h700/platform/platform.c
++++ b/workspace/h700/platform/platform.c
+@@ -327,8 +327,9 @@ static int num_controllers = 0;
+ 
+ // 2-player mode (minarch Controls > "2-player mode", PLAT_setPlayersMode):
+ // 0 = off (every pad is player 1), 1 = console P1 / external pad P2,
+-// 2 = external pad P1 / console P2. Player 2 presses go to pad2 (held buttons
+-// and sticks, read by minarch on port 1); MENU, POWER and volume always stay
++// 2 = external pad P1 / console P2, 3 = two external pads: the first one
++// connected (and the console) is player 1, the next one player 2. Player 2
++// presses go to pad2 (held buttons and sticks, read by minarch on port 1); MENU, POWER and volume always stay
+ // on pad, so either player can open the menu. Only while the game runs
+ // (PLAT_setPlayersActive): in minarch's menu every pad drives it, like
+ // RetroArch's "All Users Control Menu", so changing the mode never takes
+@@ -338,8 +339,25 @@ static int players_active = 1;
+ // Buttons whose press went to player 2, per source: a release always goes
+ // where its press went, even if the mode changed in between (otherwise the
+ // left/right press that changes the mode stays held forever on the other side).
+-static int ext_on_p2 = 0;
++// Mode 3 keeps one mask per external pad, so both can hold the same button.
++static int ext_on_p2[2] = {0, 0};
+ static int builtin_on_p2 = 0;
++// External device behind the SDL event being handled (poll_sdl_input).
++static SDL_JoystickID ext_which = -1;
++// Mode 3: the second pad is any external device but the one connected first
++// (SDL instance ids grow with each connection); a lone pad is player 1.
++static int ext_is_second(void) {
++	SDL_JoystickID first = -1;
++	for (int i = 0; i < num_controllers; i++) {
++		SDL_JoystickID id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controllers[i]));
++		if (first < 0 || id < first) first = id;
++	}
++	for (int i = 0; i < num_joysticks; i++) {
++		SDL_JoystickID id = SDL_JoystickInstanceID(joysticks[i]);
++		if (first < 0 || id < first) first = id;
++	}
++	return players_mode == 3 && ext_which >= 0 && ext_which != first;
++}
+ // Sticks back to centre on both sides: an axis moved before a switch would
+ // otherwise keep its last value, and its analog buttons stay held.
+ static void players_recentre(void) {
+@@ -349,8 +367,14 @@ static void players_recentre(void) {
+ 	PAD_setAnalog(BTN_ID_ANALOG_LEFT, BTN_ID_ANALOG_RIGHT, 0, tick);
+ 	PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, 0, tick);
+ }
++// A pad left: who is player 1/2 may change (mode 3), so nothing pressed
++// through the old assignment may stay held on player 2.
++static void players_pad_removed(void) {
++	ext_on_p2[0] = ext_on_p2[1] = 0;
++	players_recentre();
++}
+ void PLAT_setPlayersMode(int mode) {
+-	players_mode = (mode == 1 || mode == 2) ? mode : 0;
++	players_mode = (mode >= 1 && mode <= 3) ? mode : 0;
+ 	players_recentre();
+ 	LOG_info("2-player mode: %i\n", players_mode);
+ }
+@@ -368,7 +392,7 @@ void PLAT_setPlayersActive(int active) {
+ 	apply_button_state(BTN_Y, BTN_ID_Y, 0, tick);
+ }
+ // Where external / built-in presses and sticks go right now.
+-static int ext_to_p2(void) { return players_active && players_mode == 1; }
++static int ext_to_p2(void) { return players_active && (players_mode == 1 || ext_is_second()); }
+ static int builtin_to_p2(void) { return players_active && players_mode == 2; }
+ static int stays_on_pad(int btn) {
+ 	return btn == BTN_NONE || btn == BTN_MENU || btn == BTN_POWER || btn == BTN_PLUS || btn == BTN_MINUS;
+@@ -392,7 +416,7 @@ static void route_button(int *on_p2, int to_p2, int btn, int id, int pressed, ui
+ 	else pad2.is_pressed &= ~btn;
+ }
+ static void apply_external_button(int btn, int id, int pressed, uint32_t tick) {
+-	route_button(&ext_on_p2, ext_to_p2(), btn, id, pressed, tick);
++	route_button(&ext_on_p2[ext_is_second()], ext_to_p2(), btn, id, pressed, tick);
+ }
+ static void apply_builtin_button(int btn, int id, int pressed, uint32_t tick) {
+ 	route_button(&builtin_on_p2, builtin_to_p2(), btn, id, pressed, tick);
+@@ -425,6 +449,7 @@ static void close_controller(int slot) {
+ 	for (int j = slot; j < num_controllers - 1; j++)
+ 		controllers[j] = controllers[j + 1];
+ 	num_controllers--;
++	players_pad_removed();
+ }
+ 
+ extern char *program_invocation_short_name; // glibc
+@@ -602,6 +627,15 @@ static void poll_sdl_input(uint32_t tick) {
+ 		int pressed = 0;
+ 		int id = -1;
+ 
++		switch (event.type) {
++		case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: ext_which = event.cbutton.which; break;
++		case SDL_CONTROLLERAXISMOTION: ext_which = event.caxis.which; break;
++		case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP: ext_which = event.jbutton.which; break;
++		case SDL_JOYHATMOTION: ext_which = event.jhat.which; break;
++		case SDL_JOYAXISMOTION: ext_which = event.jaxis.which; break;
++		default: ext_which = -1; break;
++		}
++
+ 		// A pad opened as a GameController also sends raw joystick events:
+ 		// only its controller events count.
+ 		if (((event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) && controller_slot(event.jbutton.which) >= 0)
+@@ -670,7 +704,7 @@ static void poll_sdl_input(uint32_t tick) {
+ 				continue;
+ 			}
+ 
+-			if (!pressed && btn != BTN_NONE && !(pad.is_pressed & btn))
++			if (!pressed && btn != BTN_NONE && !((pad.is_pressed | pad2.is_pressed) & btn))
+ 				btn = BTN_NONE;
+ 		}
+ 		else if (event.type == SDL_QUIT) {
+@@ -824,6 +858,7 @@ void PLAT_updateInput(const SDL_Event *event) {
+             if (SDL_JoystickInstanceID(joysticks[i]) == removed_id) {
+                 LOG_info("Joystick removed: %s\n", SDL_JoystickName(joysticks[i]));
+                 SDL_JoystickClose(joysticks[i]);
++                players_pad_removed();
+ 
+                 // Shift down the remaining entries
+                 for (int j = i; j < num_joysticks - 1; ++j)
