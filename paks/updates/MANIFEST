@@ -1,11 +1,11 @@
 # Updates.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
 # payload/ is installed outside the pak by post-install.sh.
-# pak CLI déplacé hors de Updates.pak dans /.userdata/bin/pak (phase 2)
 launch.sh                               paks/updates/launch.sh
 pak.json                                paks/updates/pak.json
 post-install.sh                         paks/updates/post-install.sh
 lib/paplib.sh                           paks/lib/paplib.sh
 log-viewer                              go:logview
+payload/pak                             go:paks/updates/cli
 payload/port-hm.py                      paks/ports/port-hm.py
 payload/hooks/12-pak-cli.sync.sh        paks/hooks/boot.d/12-pak-cli.sync.sh
 payload/hooks/13-port-cli.sync.sh       paks/hooks/boot.d/13-port-cli.sync.sh
