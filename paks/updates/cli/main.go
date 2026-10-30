@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "1.2.0"
+const version = "1.2.2"
 
 const usage = `pak — NextUI pak manager (Pak Store catalogue)
 
