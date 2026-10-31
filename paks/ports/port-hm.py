@@ -64,6 +64,17 @@ def load_library():
 hmlib, logger = load_library()
 
 
+def _err_write(text, flush=False):
+    """Write to stderr; a broken pipe (the ssh link dropped mid-download) must
+    not fail the install, so the error is swallowed and the work continues."""
+    try:
+        sys.stderr.write(text)
+        if flush:
+            sys.stderr.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
+
 class Callback(hmlib.Callback):
     """Download progress and messages on stderr, like the harbourmaster CLI."""
 
@@ -76,30 +87,29 @@ class Callback(hmlib.Callback):
     def progress(self, message, amount, total=None, fmt=None):
         if message is None or fmt != 'data':
             if self.open_line:
-                sys.stderr.write('\n')
+                _err_write('\n')
                 self.open_line = False
             self.last = None
             return
         if message != self.last:
             if self.open_line:
-                sys.stderr.write('\n')
+                _err_write('\n')
                 self.open_line = False
-            print(f'  {message}')
+            _err_write(f'  {message}\n')
             self.last = message
         if self.tty:
             mb = amount / 1048576
             tot = f' / {total / 1048576:.1f}' if total else ''
-            sys.stderr.write(f'\r  {mb:.1f}{tot} MB')
-            sys.stderr.flush()
+            _err_write(f'\r  {mb:.1f}{tot} MB', flush=True)
             self.open_line = True
 
     def message(self, message):
         if message and not str(message).startswith('- ') and message != 'Loading...':
-            print(f'  {message}')
+            _err_write(f'  {message}\n')
 
     def message_box(self, message):
         if message:
-            print(f'  {message}')
+            _err_write(f'  {message}\n')
 
 
 def open_hm(temp_dir, check):
