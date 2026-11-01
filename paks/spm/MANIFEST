@@ -1,0 +1,5 @@
+# SP Manager.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
+launch.sh      paks/spm/launch.sh
+pak.json       paks/spm/pak.json
+README.md      paks/spm/README.md
+spm            go:paks/spm/spm
