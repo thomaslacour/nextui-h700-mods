@@ -25,12 +25,18 @@ const usage = `spm — SP manager
   spm history audit             tracker rows whose ROM no longer exists
   spm clean                     plan: move orphan saves/states/art to quarantine (dry-run)
   spm fix names                 plan: rename ROMs with unsupported characters (dry-run)
+  spm search word...            look up a game from local metadata (gamelist.xml)
+  spm info <id>                 show details for a local entry
+  spm update                    refresh local metadata index
+  spm cache status|clean        local metadata cache
   spm backup --to <dir> [--apply]   verified save snapshot (alias: bk; dry-run)
   spm restore --from <dir> [--apply]  put a backup back (dry-run; keeps overwritten saves)
   spm verify --from <dir>       verify every backup file without restoring
   spm version
   spm --check                   probe the card and report its layout
 
+Local metadata from Roms/*/gamelist.xml or SDCARD/gamelist.xml (EmulationStation format).
+No network or ScreenScraper credentials required.
 Backup/restore default to --dry-run (-n); only --apply writes. Do not combine them.
 Use --mount /path/to/usb (or SPM_BACKUP_MOUNT) to require mounted external storage.
 Backup needs a new empty directory; clean/fix remain plan-only.
@@ -88,13 +94,10 @@ func writeJSON(v any) error {
 	return enc.Encode(v)
 }
 
-// cachedScraper builds a ScreenScraper client with the on-disk cache, honouring
-// --refresh (bypass the cache). Credentials are loaded from env/config.
+// cachedScraper is kept for compatibility with tests that reference it.
 func cachedScraper(e *Env, rest []string) (*scraper, error) {
 	creds, err := e.screenScraperCreds()
 	if err != nil {
-		// A fresh cache is usable without credentials or a network connection.
-		// Missing credentials are reported by get() only on an actual cache miss.
 		creds = Credentials{}
 	}
 	s := newScraper("", creds)
@@ -422,11 +425,40 @@ func main() {
 		}
 		runPlan(env, "fix names", args[2:])
 	case "search":
-		fail("ScreenScraper features removed")
+		if len(args) < 2 {
+			fail("search needs a term")
+		}
+		hits, err := env.searchLocal(strings.Join(stripFlags(args[1:], "--refresh"), " "))
+		if err != nil {
+			fail(err.Error())
+		}
+		printLocalSearch(hits)
 	case "info":
-		fail("ScreenScraper features removed")
-	case "update", "cache":
-		fail("ScreenScraper features removed")
+		if len(args) < 2 {
+			fail("info needs one id or path")
+		}
+		h, err := env.localInfo(args[1])
+		if err != nil {
+			fail(err.Error())
+		}
+		printLocalInfo(h)
+	case "update":
+		env.updateLocalIndex()
+		fmt.Println("local metadata index updated")
+	case "cache":
+		c := newLocalCache(cacheDir(env))
+		if len(args) < 2 {
+			fail("cache needs: status or clean")
+		}
+		switch args[1] {
+		case "status":
+			st := c.status()
+			fmt.Printf("entries: %d · %s\n", st.Entries, humanBytes(st.Bytes))
+		case "clean":
+			fmt.Printf("removed %d cached entries\n", c.clean(hasFlag(args[2:], "--all")))
+		default:
+			fail("unknown cache command: " + args[1])
+		}
 	case "backup", "bk":
 		runTransfer(env, "backup", args[1:])
 	case "restore", "verify":
