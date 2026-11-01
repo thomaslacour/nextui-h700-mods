@@ -2,7 +2,7 @@
   "name": "SP Manager",
   "version": "0.1.1",
   "type": "TOOL",
-  "description": "Terminal ROM/save manager (SSH, adb shell, Terminal): list, audit, history, ScreenScraper search",
+  "description": "Terminal ROM/save manager (SSH, adb shell, Terminal): list, audit, history, backup, restore"
   "author": "NextUI H700 community tooling",
   "platforms": ["h700"]
 }

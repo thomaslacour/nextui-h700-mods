@@ -23,19 +23,14 @@ const usage = `spm — SP manager
   spm history list [--json]     play history from game_logs.sqlite
   spm history search word...    history whose name/system/path matches every word
   spm history audit             tracker rows whose ROM no longer exists
-  spm clean [--apply]           plan: move orphan saves/states/art to quarantine (dry-run)
-  spm fix names [--apply]       plan: rename ROMs with unsupported characters (dry-run)
-  spm search word...            look up a game in ScreenScraper (title, system, year)
-  spm info <id>                 full ScreenScraper record (description, genres…)
-  spm update                    refresh stale cached metadata
-  spm cache status|clean        cached ScreenScraper entries (clean --all drops everything)
+  spm clean                     plan: move orphan saves/states/art to quarantine (dry-run)
+  spm fix names                 plan: rename ROMs with unsupported characters (dry-run)
   spm backup --to <dir> [--apply]   verified save snapshot (alias: bk; dry-run)
   spm restore --from <dir> [--apply]  put a backup back (dry-run; keeps overwritten saves)
   spm verify --from <dir>       verify every backup file without restoring
   spm version
   spm --check                   probe the card and report its layout
 
-Search and info are cached (SPM_CACHE_DIR, SPM_CACHE_TTL); --refresh re-fetches.
 Backup/restore default to --dry-run (-n); only --apply writes. Do not combine them.
 Use --mount /path/to/usb (or SPM_BACKUP_MOUNT) to require mounted external storage.
 Backup needs a new empty directory; clean/fix remain plan-only.
@@ -427,59 +422,11 @@ func main() {
 		}
 		runPlan(env, "fix names", args[2:])
 	case "search":
-		if len(args) < 2 {
-			fail("search needs a term")
-		}
-		s, err := cachedScraper(env, args[1:])
-		if err != nil {
-			fail(err.Error())
-		}
-		hits, err := s.search(strings.Join(stripFlags(args[1:], "--refresh"), " "))
-		if err != nil {
-			fail(err.Error())
-		}
-		printSearch(hits)
+		fail("ScreenScraper features removed")
 	case "info":
-		if len(args) < 2 {
-			fail("info needs one game id")
-		}
-		s, err := cachedScraper(env, args[1:])
-		if err != nil {
-			fail(err.Error())
-		}
-		g, err := s.info(args[1])
-		if err != nil {
-			fail(err.Error())
-		}
-		printInfo(g)
-	case "update":
-		s, err := cachedScraper(env, args[1:])
-		if err != nil {
-			fail(err.Error())
-		}
-		updated, failed := s.refreshAll()
-		fmt.Printf("refreshed %d cached entries", updated)
-		if failed > 0 {
-			fmt.Printf(", %d failed", failed)
-		}
-		fmt.Println()
-		if failed > 0 {
-			os.Exit(1)
-		}
-	case "cache":
-		c := newCache(cacheDir(env))
-		if len(args) < 2 {
-			fail("cache needs: status or clean")
-		}
-		switch args[1] {
-		case "status":
-			st := c.status()
-			fmt.Printf("entries: %d · %s · stale: %d · %s\n", st.Entries, humanBytes(st.Bytes), st.Stale, c.dir)
-		case "clean":
-			fmt.Printf("removed %d cached entries\n", c.clean(hasFlag(args[2:], "--all")))
-		default:
-			fail("unknown cache command: " + args[1])
-		}
+		fail("ScreenScraper features removed")
+	case "update", "cache":
+		fail("ScreenScraper features removed")
 	case "backup", "bk":
 		runTransfer(env, "backup", args[1:])
 	case "restore", "verify":
