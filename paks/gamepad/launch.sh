@@ -36,7 +36,7 @@ cmdline() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null; }
 
 # Class 0x000508 = peripheral / gamepad (bluetoothd adds the service bits).
 # DeviceID = the Xbox One S controller over Bluetooth (USB vendor source,
-# 045E:02FD, firmware 4.8 = 0x0903): hosts pick their Xbox driver / mapping
+# 045E:02E0, Windows report format): hosts pick their Xbox driver / mapping
 # from it (see pad/hid.go).
 write_conf() {
     {
@@ -46,13 +46,13 @@ write_conf() {
                 /^[ \t]*\[/ { sec = $0; gsub(/[ \t\[\]]/, "", sec) }
                 sec == "General" && /^[ \t]*(Class|DeviceID|DiscoverableTimeout|PairableTimeout|JustWorksRepairing)[ \t]*=/ { next }
                 { print }
-                /^[ \t]*\[General\]/ { done = 1; print "Class = 0x000508"; print "DeviceID = usb:045E:02FD:0903"; print "DiscoverableTimeout = 0";
+                /^[ \t]*\[General\]/ { done = 1; print "Class = 0x000508"; print "DeviceID = usb:045E:02E0:0903"; print "DiscoverableTimeout = 0";
                     print "PairableTimeout = 0"; print "JustWorksRepairing = always" }
-                END { if (!done) { print "[General]"; print "Class = 0x000508"; print "DeviceID = usb:045E:02FD:0903"; print "DiscoverableTimeout = 0";
+                END { if (!done) { print "[General]"; print "Class = 0x000508"; print "DeviceID = usb:045E:02E0:0903"; print "DiscoverableTimeout = 0";
                     print "PairableTimeout = 0"; print "JustWorksRepairing = always" } }
             ' "$STOCK_CONF"
         else
-            printf '[General]\nClass = 0x000508\nDeviceID = usb:045E:02FD:0903\nDiscoverableTimeout = 0\nPairableTimeout = 0\nJustWorksRepairing = always\n'
+            printf '[General]\nClass = 0x000508\nDeviceID = usb:045E:02E0:0903\nDiscoverableTimeout = 0\nPairableTimeout = 0\nJustWorksRepairing = always\n'
         fi
     } > "$CONF"
 }

@@ -133,22 +133,22 @@ func TestConnCallsAndCallbacks(t *testing.T) {
 
 func TestReportAndHat(t *testing.T) {
 	var s padState
-	idle := []byte{0xA1, 1, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0, 0, 0, 0, 0, 0, 0, 0}
+	idle := []byte{0xA1, 1, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0, 0, 0, 0, 0, 0, 0}
 	if r := s.report(); !bytes.Equal(r, idle) {
 		t.Fatalf("idle report % x", r)
 	}
-	if len(idle)-2 != 16 {
-		t.Fatal("report 1 is 16 bytes")
+	if len(idle)-2 != 15 {
+		t.Fatal("report 1 is 15 bytes")
 	}
 	s.apply(evKey{codeB, 1})      // south = Xbox A, bit 0
-	s.apply(evKey{codeX, 1})      // north = Xbox Y, bit 4
-	s.apply(evKey{codeStart, 1})  // Menu, bit 11
-	s.apply(evKey{codeSelect, 1}) // View = AC Back
+	s.apply(evKey{codeX, 1})      // north = Xbox Y, bit 3
+	s.apply(evKey{codeStart, 1})  // Menu, bit 7
+	s.apply(evKey{codeSelect, 1}) // View, bit 6
 	s.apply(evKey{codeL2, 1})     // left trigger full
 	s.apply(evKey{codeUp, 1})
 	s.apply(evKey{codeRight, 1}) // up-right = 2
 	r := s.report()
-	if !bytes.Equal(r[10:], []byte{0xFF, 0x03, 0, 0, 2, 0x11, 0x08, 0x01}) {
+	if !bytes.Equal(r[10:], []byte{0xFF, 0x03, 0, 0, 2, 0xC9, 0}) {
 		t.Fatalf("report % x", r)
 	}
 	s.apply(evKey{codeUp, 0})
@@ -163,14 +163,65 @@ func TestReportAndHat(t *testing.T) {
 		t.Fatal("power key must not be forwarded")
 	}
 	s.set(hidHome, true)
-	if r := s.report(); r[16]&0x10 == 0 || !bytes.Equal(s.homeReport(), []byte{0xA1, 2, 1}) {
+	if r := s.report(); r[16]&0xFC != 0 || !bytes.Equal(s.homeReport(), []byte{0xA1, 2, 1}) {
 		t.Fatalf("home % x / % x", r, s.homeReport())
 	}
 }
 
 func TestDescriptorIsXbox(t *testing.T) {
-	if len(reportDescriptor) != 334 || reportDescriptor[len(reportDescriptor)-1] != 0xC0 {
+	if len(reportDescriptor) != 306 || reportDescriptor[len(reportDescriptor)-1] != 0xC0 {
 		t.Fatalf("descriptor %d bytes", len(reportDescriptor))
+	}
+}
+
+func TestWindowsReportMatchesFirefoxXboxOneSMapping(t *testing.T) {
+	// Firefox's 045E:02E0 remapper uses contiguous HID buttons and desktop
+	// axes Z/Rz for triggers. Check every physical key against that protocol,
+	// independently of our internal hid* state-bit constants.
+	for _, tc := range []struct {
+		name string
+		code uint16
+		bit  uint
+	}{
+		{"B/south", codeB, 0}, {"A/east", codeA, 1},
+		{"Y/west", codeY, 2}, {"X/north", codeX, 3},
+		{"L1", codeL1, 4}, {"R1", codeR1, 5},
+		{"Select", codeSelect, 6}, {"Start", codeStart, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var state padState
+			state.apply(evKey{tc.code, 1})
+			report := state.report()
+			bits := uint16(report[15]) | uint16(report[16])<<8
+			if bits != 1<<tc.bit || report[10] != 0 || report[12] != 0 {
+				t.Fatalf("wrong Windows button: % x", report)
+			}
+			state.apply(evKey{tc.code, 0})
+			if !bytes.Equal(state.report(), (padState{}).report()) {
+				t.Fatal("button stuck after release")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		code uint16
+		at   int
+	}{{codeL2, 10}, {codeR2, 12}} {
+		var state padState
+		state.apply(evKey{tc.code, 1})
+		r := state.report()
+		if r[tc.at] != 255 || r[tc.at+1] != 3 || r[15] != 0 || r[16] != 0 {
+			t.Fatalf("trigger must be a 10-bit axis, not a button: % x", r)
+		}
+	}
+	// Real Windows descriptor: right stick Rx/Ry, triggers desktop Z/Rz,
+	// ten contiguous buttons; no simulation-page brake/accelerator usages.
+	for _, hex := range []string{"09330934", "05010932150026ff03", "05010935150026ff03", "05091901290a"} {
+		if !strings.Contains(xboxDescriptor, hex) {
+			t.Fatalf("missing Windows HID field %s", hex)
+		}
+	}
+	if strings.Contains(xboxDescriptor, "050209c5") || strings.Contains(xboxDescriptor, "050209c4") {
+		t.Fatal("Linux simulation triggers are not handled by Firefox's Xbox remapper")
 	}
 }
 
@@ -252,7 +303,7 @@ func TestControlReply(t *testing.T) {
 	if r, _ := controlReply([]byte{0x60}, s, &proto); !bytes.Equal(r, []byte{0xA0, 1}) {
 		t.Fatalf("get protocol % x", r)
 	}
-	if r, _ := controlReply([]byte{0x41, 0x01}, s, &proto); len(r) != 18 || r[0] != 0xA1 || r[15] != 0x02 {
+	if r, _ := controlReply([]byte{0x41, 0x01}, s, &proto); len(r) != 17 || r[0] != 0xA1 || r[15] != 0x02 {
 		t.Fatalf("get report % x", r)
 	}
 	if r, _ := controlReply([]byte{0x41, 0x04}, s, &proto); !bytes.Equal(r, []byte{0xA1, 4, 0xFF}) {

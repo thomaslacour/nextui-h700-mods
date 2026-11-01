@@ -4,9 +4,11 @@ package main
 // bluetoothd publishes for us (ProfileManager1.RegisterProfile).
 //
 // The pad presents itself as an Xbox One S controller over Bluetooth classic
-// (045E:02FD, firmware 4.8, Device ID set by launch.sh's main.conf), with that
-// controller's own report descriptor (Linux-mode dump from xpadneo,
-// docs/descriptors/xb1s_linux.md). macOS / iOS (GameController), Android,
+// (045E:02E0, Device ID set by launch.sh's main.conf), with that
+// controller's Windows-mode report descriptor (xpadneo,
+// docs/descriptors/xb1s_windows.md, without its trailing null byte). The
+// identity and format must agree: Firefox's 02FD mapping does not handle
+// Linux-mode simulation-page triggers. macOS / iOS (GameController), Android,
 // Windows and SDL (ES-DE, Steam, emulators) all know it as a game pad, while
 // a generic HID pad is only a joystick without mapping there (checked on
 // macOS: SDL saw no game pad at all).
@@ -20,26 +22,27 @@ import (
 
 const hidUUID = "00001124-0000-1000-8000-00805f9b34fb"
 
-// xboxDescriptor: report 1 = X Y Z Rz (16 bits, 0-65534), brake (LT) and
-// accelerator (RT) (10 bits), hat (1-8, 0 = none), 15 buttons, AC Back
-// (View); report 2 = AC Home (Xbox button); 3 = rumble (output, ignored);
+// xboxDescriptor: report 1 = X Y Rx Ry (16 bits, 0-65535), Z (LT) and
+// Rz (RT) (10 bits), hat (1-8, 0 = none), 10 contiguous buttons;
+// report 2 = System Main Menu (Xbox button); 3 = rumble (output, ignored);
 // 4 = battery.
-const xboxDescriptor = "05010905a10185010901a10009300931150027ffff0000950275108102c00901a10009320935150027ffff0000950275108102c0050209c5150026ff039501750a810215002500750695018103050209c4150026ff039501750a81021500250075069501810305010939150125083500463b016614007504950181427504950115002500350045006500810305091901290f150025017501950f810215002500750195018103050c0a24021500250195017501810215002500750795018103050c09018502a101050c0a23021500250195017501810215002500750795018103c0050f09218503a102099715002501750495019102150025007504950191030970150025647508950491020950660110550e150026ff0075089501910209a7150026ff0075089501910265005500097c150026ff00750895019102c0050609208504150026ff00750895018102c0"
+const xboxDescriptor = "05010905a10185010901a10009300931150027ffff0000950275108102c00901a10009330934150027ffff0000950275108102c005010932150026ff039501750a81021500250075069501810305010935150026ff039501750a81021500250075069501810305010939150125083500463b016614007504950181427504950115002500350045006500810305091901290a150025017501950a810215002500750695018103050109808502a10009851500250195017501810215002500750795018103c0050f09218503a102099715002501750495019102150025007504950191030970150025647508950491020950660110550e150026ff0075089501910209a7150026ff0075089501910265005500097c150026ff00750895019102c0850405060920150026ff00750895018102c0"
 
 var reportDescriptor, _ = hex.DecodeString(xboxDescriptor)
 
-// HID button numbers (1-based).
+// State bit numbers (1-based). The first ten match the Windows HID bitmap;
+// triggers and Home are internal state bits, sent in separate fields/reports.
 const (
 	hidSouth  = 1
 	hidEast   = 2
-	hidWest   = 4
-	hidNorth  = 5
-	hidL1     = 7
-	hidR1     = 8
-	hidL2     = 9
-	hidR2     = 10
-	hidSelect = 11
-	hidStart  = 12
+	hidWest   = 3
+	hidNorth  = 4
+	hidL1     = 5
+	hidR1     = 6
+	hidL2     = 11
+	hidR2     = 12
+	hidSelect = 7
+	hidStart  = 8
 	hidHome   = 13
 )
 
@@ -87,11 +90,11 @@ func (s padState) hat() byte {
 func (s padState) on(b int) bool { return s.buttons&(1<<(b-1)) != 0 }
 
 // report is the interrupt-channel frame of report 1: HIDP DATA|Input
-// header, report ID, then 16 bytes. Sticks stay centred (the SP has none);
-// L2 / R2 pull the analog triggers fully; SELECT is View (AC Back); the
-// button bitmap carries A B X Y LB RB Menu (12) and Xbox (13).
+// header, report ID, then 15 bytes. Sticks stay centred (the SP has none);
+// L2 / R2 pull the analog triggers fully; the button bitmap carries
+// A B X Y LB RB View Menu L3 R3 (the SP has no stick clicks).
 func (s padState) report() []byte {
-	r := make([]byte, 18)
+	r := make([]byte, 17)
 	r[0], r[1] = 0xA1, 0x01
 	for i := 0; i < 4; i++ {
 		r[2+2*i], r[3+2*i] = 0xFF, 0x7F // 32767 = centre
@@ -118,15 +121,12 @@ func (s padState) report() []byte {
 	if !s.stick {
 		r[14] = s.hat()
 	}
-	bits := s.buttons &^ (1<<(hidL2-1) | 1<<(hidR2-1) | 1<<(hidSelect-1))
-	r[15], r[16] = byte(bits), byte(bits>>8)&0x7F
-	if s.on(hidSelect) {
-		r[17] = 0x01
-	}
+	bits := s.buttons & 0x03FF
+	r[15], r[16] = byte(bits), byte(bits>>8)
 	return r
 }
 
-// homeReport is report 2 (AC Home), sent with the Xbox button bit.
+// homeReport is report 2 (System Main Menu), sent with the Xbox button bit.
 func (s padState) homeReport() []byte {
 	r := []byte{0xA1, 0x02, 0}
 	if s.on(hidHome) {
