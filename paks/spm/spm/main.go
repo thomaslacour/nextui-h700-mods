@@ -14,7 +14,7 @@ import (
 	"text/tabwriter"
 )
 
-const version = "0.1.4"
+const version = "0.1.5"
 
 const usage = `spm — SP manager
 
@@ -25,7 +25,7 @@ const usage = `spm — SP manager
   spm history audit             tracker rows whose ROM no longer exists
   spm clean                     plan: move orphan saves/states/art to quarantine (dry-run)
   spm fix names                 plan: rename ROMs with unsupported characters (dry-run)
-  spm search word...            search installed ROMs (optional gamelist.xml metadata)
+  spm search word... [--all|-a]  name/system; --all adds ID and path
   spm info <id>                 show details for a local entry
   spm update                    rescan ROMs and optional local metadata (no download)
   spm cache status|clean        local metadata cache
@@ -442,11 +442,11 @@ func main() {
 		if len(args) < 2 {
 			fail("search needs a term")
 		}
-		hits, err := env.searchLocal(strings.Join(stripFlags(args[1:], "--refresh"), " "))
+		hits, err := env.searchLocal(strings.Join(stripFlags(args[1:], "--refresh", "--all", "-a"), " "))
 		if err != nil {
 			fail(err.Error())
 		}
-		printLocalSearch(hits)
+		printLocalSearch(hits, hasFlag(args[1:], "--all", "-a"))
 	case "info":
 		if len(args) < 2 {
 			fail("info needs one id or path")

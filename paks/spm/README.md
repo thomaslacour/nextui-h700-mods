@@ -14,7 +14,7 @@ spm history search <mots…>
 spm history audit
 spm clean                          # plan uniquement
 spm fix names                      # plan uniquement
-spm search <mots…>                  # ROMs, XML facultatif
+spm search <mots…> [--all|-a]        # NAME/SYSTEM ; détails avec --all
 spm info <id|nom|chemin>
 spm update                         # relire les sources locales
 spm cache status
@@ -92,6 +92,7 @@ spm info 'Roms/Game Boy (GB)/Zelda.gb'
 spm update
 ```
 
+`search` affiche NAME et SYSTEM par défaut ; `--all` / `-a` ajoute ID et PATH.
 Les IDs affichés sont les chemins relatifs des ROMs, stables et distincts entre
 systèmes. `info` accepte aussi un nom de fichier ou un titre non ambigu.
 Les fichiers `gamelist.xml` à la racine ou sous `Roms/<système>/` peuvent enrichir

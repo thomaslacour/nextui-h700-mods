@@ -252,14 +252,22 @@ func (e *Env) updateLocalIndex() (int, error) {
 	return len(games), err
 }
 
-func printLocalSearch(hits []localGame) {
+func printLocalSearch(hits []localGame, full bool) {
 	if len(hits) == 0 {
 		fmt.Println("no matches in ROM inventory")
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tSYSTEM\tPATH")
+	if full {
+		fmt.Fprintln(w, "ID\tNAME\tSYSTEM\tPATH")
+	} else {
+		fmt.Fprintln(w, "NAME\tSYSTEM")
+	}
 	for _, h := range hits {
+		if !full {
+			fmt.Fprintf(w, "%s\t%s\n", h.Name, h.System)
+			continue
+		}
 		id := h.ID
 		if id == "" && h.Path != "" {
 			id = filepath.Base(h.Path)
