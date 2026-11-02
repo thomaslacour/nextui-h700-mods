@@ -14,9 +14,9 @@ spm history search <mots…>
 spm history audit
 spm clean                          # plan uniquement
 spm fix names                      # plan uniquement
-spm search <titre> [--refresh]
-spm info <id> [--refresh]
-spm update [--refresh]
+spm search <mots…>                  # ROMs, XML facultatif
+spm info <id|nom|chemin>
+spm update                         # relire les sources locales
 spm cache status
 spm cache clean [--all]
 spm backup --to <dossier> [--dry-run | --apply] [--mount <volume>] [--json]
@@ -79,28 +79,46 @@ restaurés ; conserver le journal et les originaux, examiner la situation avant
 de retirer un verrou ou de réessayer. Aucune récupération destructive automatique.
 Les backups ne sont **pas chiffrés** : choisir un support de confiance.
 
-## ScreenScraper et cache
+## Recherche hors ligne et enrichissement facultatif
 
-Identifiants dans `SS_DEVID`, `SS_DEVPASSWORD`, `SS_ID`, `SS_PASSWORD`, ou
-`.userdata/h700/spm/screenscraper.json`. Chaque variable d'environnement
-présente prévaut sur le fichier. Ne pas publier ces valeurs ; les permissions
-sur une carte FAT/exFAT ne les protègent pas réellement.
+`search` et `info` parcourent directement `Roms/`, avec les mêmes règles que
+NextUI. Aucun XML, compte ou réseau n'est nécessaire. Tous les mots recherchés
+doivent apparaître dans le nom, fichier, système ou les métadonnées facultatives.
 
-Le cache ne contient que la requête sans authentification et sa réponse de
-métadonnées. `SPM_CACHE_DIR` change son emplacement ; `SPM_CACHE_TTL` définit
-sa fraîcheur (défaut `24h`). Limite : **64 entrées / 16 Mio** de fichiers
-publiés, plus un temporaire d'écriture borné à environ 4 Mio. Les entrées les
-plus anciennes sont évincées ; les fichiers JSON étrangers et les liens sont
-ignorés par le nettoyage. Écriture atomique, sans stocker les identifiants.
+```sh
+spm search zelda
+spm search zelda boy
+spm info 'Roms/Game Boy (GB)/Zelda.gb'
+spm update
+```
 
-- Cache frais utilisable sans réseau ni identifiants chargés.
-- `update` rafraîchit les entrées périmées ; `update --refresh` les force toutes.
-- `search/info --refresh` force la requête correspondante.
-- Délai HTTP de 20 s, redirections refusées, erreurs sans URL authentifiée.
+Les IDs affichés sont les chemins relatifs des ROMs, stables et distincts entre
+systèmes. `info` accepte aussi un nom de fichier ou un titre non ambigu.
+Les fichiers `gamelist.xml` à la racine ou sous `Roms/<système>/` peuvent enrichir
+les jeux existants (titre, description, éditeur, genre, etc.) par chemin exact.
+Les références XML vers des ROMs absentes n'ajoutent pas de faux résultats.
+Un XML invalide émet un avertissement sans masquer les ROMs.
 
-Les appels ScreenScraper sont testés avec un serveur HTTP simulé, **pas encore
-avec un compte réel**. Le lecteur SQLite maison ne traite pas les données du
-WAL : l'audit les signale, l'historique peut être incomplet tant qu'il est actif.
+`update` relit les sources locales et compte les ROMs : **aucun téléchargement ni
+index persistant**. Chaque recherche relit les fichiers ; `--refresh` n'est donc
+pas nécessaire. `cache status|clean` reste disponible pour les anciens fichiers
+de cache générés par spm, sans effacer les fichiers étrangers ou les XML sources.
+
+Pour obtenir de vraies descriptions, **Skyscraper** (à distinguer de Skraper)
+peut utiliser un compte utilisateur ScreenScraper sans demander à l'utilisateur
+ses propres identifiants développeur. Il produit des gamelists EmulationStation.
+Voir [les sources supportées](https://gemba.github.io/skyscraper/SCRAPINGMODULES/)
+et [l'installation](https://gemba.github.io/skyscraper/INSTALLATION/).
+Des AppImages Linux ARM64 sont proposées, mais leur fonctionnement sur NextUI
+n'a pas été validé : ce n'est pas un binaire Go statique léger. Préférer un
+ordinateur ou l'OrangePi pour le scraping, avec cache et sortie hors de la SD.
+Tester sur une copie de quelques ROMs, conserver les noms et produire les XML
+dans un dossier séparé avant toute copie sur la console. Ne jamais écraser des
+XML/images existants sans sauvegarde. Les chemins XML doivent correspondre aux
+ROMs de la console (idéalement relatifs).
+
+Le lecteur SQLite maison ne traite pas les données du WAL : l'audit les signale,
+l'historique peut être incomplet tant qu'il est actif.
 
 ## Tests et compilation
 

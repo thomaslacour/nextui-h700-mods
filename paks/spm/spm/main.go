@@ -14,7 +14,7 @@ import (
 	"text/tabwriter"
 )
 
-const version = "0.1.0"
+const version = "0.1.4"
 
 const usage = `spm — SP manager
 
@@ -25,9 +25,9 @@ const usage = `spm — SP manager
   spm history audit             tracker rows whose ROM no longer exists
   spm clean                     plan: move orphan saves/states/art to quarantine (dry-run)
   spm fix names                 plan: rename ROMs with unsupported characters (dry-run)
-  spm search word...            look up a game from local metadata (gamelist.xml)
+  spm search word...            search installed ROMs (optional gamelist.xml metadata)
   spm info <id>                 show details for a local entry
-  spm update                    refresh local metadata index
+  spm update                    rescan ROMs and optional local metadata (no download)
   spm cache status|clean        local metadata cache
   spm backup --to <dir> [--apply]   verified save snapshot (alias: bk; dry-run)
   spm restore --from <dir> [--apply]  put a backup back (dry-run; keeps overwritten saves)
@@ -35,7 +35,7 @@ const usage = `spm — SP manager
   spm version
   spm --check                   probe the card and report its layout
 
-Local metadata from Roms/*/gamelist.xml or SDCARD/gamelist.xml (EmulationStation format).
+ROM inventory works without XML. Optional metadata: Roms/*/gamelist.xml or SDCARD/gamelist.xml.
 No network or ScreenScraper credentials required.
 Backup/restore default to --dry-run (-n); only --apply writes. Do not combine them.
 Use --mount /path/to/usb (or SPM_BACKUP_MOUNT) to require mounted external storage.
@@ -457,10 +457,13 @@ func main() {
 		}
 		printLocalInfo(h)
 	case "update":
-		env.updateLocalIndex()
-		fmt.Println("local metadata index updated")
+		count, err := env.updateLocalIndex()
+		if err != nil {
+			fail(err.Error())
+		}
+		fmt.Printf("rescanned %d ROMs; optional XML read locally (no download or persistent index)\n", count)
 	case "cache":
-		c := newLocalCache(cacheDir(env))
+		c := newCache(cacheDir(env))
 		if len(args) < 2 {
 			fail("cache needs: status or clean")
 		}

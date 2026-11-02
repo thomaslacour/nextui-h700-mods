@@ -122,26 +122,48 @@ func readGamelist(path string, e *Env) ([]localGame, error) {
 }
 
 func (e *Env) localIndex() ([]localGame, error) {
-	seen := map[string]bool{}
-	var all []localGame
+	roms, err := e.scanROMs()
+	if err != nil {
+		return nil, err
+	}
+	// The ROM inventory is authoritative; XML can only enrich existing games.
+	// Canonicalize root aliases (/mnt/SDCARD -> /mnt/sdcard) for exact joins.
+	canonical := func(p string) string {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			p = resolved
+		}
+		absolute, err := filepath.Abs(p)
+		if err == nil {
+			p = absolute
+		}
+		return filepath.Clean(p)
+	}
+	byPath := map[string]int{}
+	all := make([]localGame, 0, len(roms))
+	for _, rom := range roms {
+		byPath[canonical(rom.Path)] = len(all)
+		all = append(all, localGame{ID: e.localRel(rom.Path), Path: rom.Path, Name: rom.Name, System: rom.System})
+	}
 	for _, p := range e.gamelistPaths() {
 		games, err := readGamelist(p, e)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "spm: ignoring optional metadata %q: %v\n", p, err)
 			continue
 		}
 		for _, g := range games {
-			key := strings.ToLower(g.Path)
-			if key == "" {
-				key = strings.ToLower(g.Name + "|" + g.System)
-			}
-			if seen[key] {
+			i, ok := byPath[canonical(g.Path)]
+			if !ok {
 				continue
 			}
-			seen[key] = true
-			all = append(all, g)
+			base := all[i]
+			g.ID, g.Path, g.System = base.ID, base.Path, base.System
+			if g.Name == "" {
+				g.Name = base.Name
+			}
+			all[i] = g
 		}
 	}
 	sort.Slice(all, func(i, j int) bool {
@@ -174,7 +196,15 @@ func (e *Env) searchLocal(term string) ([]localGame, error) {
 		if g.Path != "" {
 			base = strings.ToLower(filepath.Base(g.Path))
 		}
-		if strings.Contains(name, term) || strings.Contains(base, term) || strings.Contains(genre, term) || strings.Contains(dev, term) || strings.Contains(pub, term) || strings.Contains(desc, term) {
+		text := strings.Join([]string{name, base, genre, dev, pub, desc, strings.ToLower(g.System)}, " ")
+		matches := true
+		for _, word := range strings.Fields(term) {
+			if !strings.Contains(text, word) {
+				matches = false
+				break
+			}
+		}
+		if matches {
 			out = append(out, g)
 		}
 	}
@@ -183,41 +213,48 @@ func (e *Env) searchLocal(term string) ([]localGame, error) {
 
 func (e *Env) localInfo(id string) (*localGame, error) {
 	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("info needs an id, path or title")
+	}
 	all, err := e.localIndex()
 	if err != nil {
 		return nil, err
 	}
 	low := strings.ToLower(id)
-	for _, g := range all {
-		if g.ID != "" && strings.ToLower(g.ID) == low {
-			cp := g
-			return &cp, nil
+	// Prefer stable ROM-relative IDs/paths, then names. Never pick an arbitrary
+	// game when the same basename or title exists on several systems.
+	for level := 0; level < 3; level++ {
+		var matches []localGame
+		for _, g := range all {
+			match := g.ID == id || g.Path == id
+			if level == 1 {
+				match = strings.EqualFold(filepath.Base(g.Path), id) || strings.EqualFold(g.Name, id)
+			}
+			if level == 2 {
+				match = strings.Contains(strings.ToLower(g.Name), low)
+			}
+			if match {
+				matches = append(matches, g)
+			}
 		}
-		if g.Path != "" && strings.EqualFold(g.Path, id) {
-			cp := g
-			return &cp, nil
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("ambiguous game: use a ROM-relative ID from spm search")
 		}
-		if g.Path != "" && strings.EqualFold(filepath.Base(g.Path), id) {
-			cp := g
-			return &cp, nil
+		if len(matches) == 1 {
+			return &matches[0], nil
 		}
 	}
-	for _, g := range all {
-		if strings.Contains(strings.ToLower(g.Name), low) {
-			cp := g
-			return &cp, nil
-		}
-	}
-	return nil, fmt.Errorf("not found in local gamelist.xml")
+	return nil, fmt.Errorf("not found in ROM inventory")
 }
 
-func (e *Env) updateLocalIndex() {
-	_, _ = e.localIndex()
+func (e *Env) updateLocalIndex() (int, error) {
+	games, err := e.localIndex()
+	return len(games), err
 }
 
 func printLocalSearch(hits []localGame) {
 	if len(hits) == 0 {
-		fmt.Println("no matches in local gamelist.xml")
+		fmt.Println("no matches in ROM inventory")
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -269,57 +306,4 @@ func printLocalInfo(h *localGame) {
 	if h.Desc != "" {
 		fmt.Printf("\n%s\n", h.Desc)
 	}
-}
-
-type localCache struct {
-	dir string
-}
-
-func newLocalCache(dir string) *localCache { return &localCache{dir: dir} }
-
-type localCacheStatus struct {
-	Entries int
-	Bytes   int64
-}
-
-func (c *localCache) status() localCacheStatus {
-	st, err := os.Stat(c.dir)
-	if err != nil || !st.IsDir() {
-		return localCacheStatus{}
-	}
-	entries, err := os.ReadDir(c.dir)
-	if err != nil {
-		return localCacheStatus{}
-	}
-	var count int
-	var total int64
-	for _, e := range entries {
-		if e.Type().IsRegular() {
-			count++
-			if info, err := e.Info(); err == nil {
-				total += info.Size()
-			}
-		}
-	}
-	return localCacheStatus{Entries: count, Bytes: total}
-}
-
-func (c *localCache) clean(all bool) int {
-	entries, err := os.ReadDir(c.dir)
-	if err != nil {
-		return 0
-	}
-	var removed int
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		name := e.Name()
-		if all || strings.HasSuffix(name, ".tmp") || strings.HasSuffix(name, ".cache") {
-			if os.Remove(filepath.Join(c.dir, name)) == nil {
-				removed++
-			}
-		}
-	}
-	return removed
 }
