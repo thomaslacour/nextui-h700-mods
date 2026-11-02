@@ -18,7 +18,7 @@ const version = "0.1.0"
 
 const usage = `spm — SP manager
 
-  spm list [--json]             games: name, system, play time, saves, last
+  spm list [--all|-a|--full]     games: name, system (default) or full details
   spm audit [--json]            ROM/save/state/box-art correspondence (alias: doctor)
   spm history list [--json]     play history from game_logs.sqlite
   spm history search word...    history whose name/system/path matches every word
@@ -119,6 +119,15 @@ func stripFlags(args []string, names ...string) []string {
 }
 
 func printList(rows []listRow) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSYSTEM")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\n", r.Name, r.System)
+	}
+	w.Flush()
+}
+
+func printListFull(rows []listRow) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSYSTEM\tTIME\tSESSIONS\tSAVES\tLAST\tPATH")
 	for _, r := range rows {
@@ -404,6 +413,11 @@ func main() {
 		}
 		if jsonFlag(args[1:]) {
 			jsonOut(rows, nil)
+			return
+		}
+		rest := args[1:]
+		if hasFlag(rest, "--all", "-a", "full", "--full") {
+			printListFull(rows)
 			return
 		}
 		printList(rows)
