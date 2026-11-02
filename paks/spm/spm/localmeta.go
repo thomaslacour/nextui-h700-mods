@@ -169,11 +169,12 @@ func (e *Env) searchLocal(term string) ([]localGame, error) {
 		genre := strings.ToLower(g.Genre)
 		dev := strings.ToLower(g.Developer)
 		pub := strings.ToLower(g.Publisher)
+		desc := strings.ToLower(g.Desc)
 		base := ""
 		if g.Path != "" {
 			base = strings.ToLower(filepath.Base(g.Path))
 		}
-		if strings.Contains(name, term) || strings.Contains(base, term) || strings.Contains(genre, term) || strings.Contains(dev, term) || strings.Contains(pub, term) {
+		if strings.Contains(name, term) || strings.Contains(base, term) || strings.Contains(genre, term) || strings.Contains(dev, term) || strings.Contains(pub, term) || strings.Contains(desc, term) {
 			out = append(out, g)
 		}
 	}
