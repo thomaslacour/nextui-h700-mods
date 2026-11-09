@@ -1,5 +1,0 @@
-# Music.pak: <path in the pak> <source from the repo root> (see paks/release.sh)
-launch.sh      paks/music/launch.sh
-pak.json       paks/music/pak.json
-lib/paplib.sh  paks/lib/paplib.sh
-music          go:paks/music/player
